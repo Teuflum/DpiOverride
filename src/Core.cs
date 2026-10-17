@@ -141,23 +141,36 @@ static class Procs
         finally { CloseHandle(h); }
     }
 
-    public static HashSet<string> RunningPaths()
+    // exe path -> process ids of all running instances
+    public static Dictionary<string, List<int>> Running()
     {
-        var set = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var map = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        int self = Process.GetCurrentProcess().Id;
         foreach (var p in Process.GetProcesses())
         {
-            try { var path = PathOf(p.Id); if (!string.IsNullOrEmpty(path)) set.Add(path); }
+            try
+            {
+                if (p.Id == self) continue;
+                var path = PathOf(p.Id);
+                if (string.IsNullOrEmpty(path)) continue;
+                List<int> pids;
+                if (!map.TryGetValue(path, out pids)) { pids = new List<int>(); map[path] = pids; }
+                pids.Add(p.Id);
+            }
             catch { }
             finally { p.Dispose(); }
         }
-        return set;
+        return map;
     }
 }
 
 class Entry
 {
     public string Path, Name, Display, AllUsers, CurrentUser;
-    public bool Running, System;
+    public bool System;
+    public List<int> Pids = new List<int>();
+    public Awareness Rendering = Awareness.Unknown;
+    public bool Running { get { return Pids.Count > 0; } }
 }
 
 static class Program
@@ -172,6 +185,7 @@ static class Program
     }
 
     static string LogPath;
+    public static bool Demo;
     public static void Log(string msg)
     {
         try { File.AppendAllText(LogPath, DateTime.Now.ToString("HH:mm:ss.fff") + "  [" + (IsAdminSafe() ? "admin" : "user") + "] " + msg + Environment.NewLine); } catch { }
@@ -188,6 +202,7 @@ static class Program
     static int Main(string[] args)
     {
         if (args.Length > 0 && args[0] == "--selftest") return Compat.SelfTest();
+        Demo = args.Contains("--demo");
         try { LogPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Application.ExecutablePath), "DpiOverride.log"); }
         catch { LogPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DpiOverride.log"); }
         Application.EnableVisualStyles();

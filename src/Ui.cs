@@ -136,6 +136,11 @@ static class Theme
             default: bg = Color.Empty; fg = Outline; break;
         }
     }
+
+    public static readonly Color GoodBg = C(0xDCF3E2), GoodFg = C(0x1B5E20);
+    public static readonly Color WarnBg = C(0xFFE9C7), WarnFg = C(0x7A4100);
+    public static readonly Color BadBg = C(0xFFDAD6), BadFg = C(0x8C1D18);
+    public static readonly Color InfoBg = C(0xDCE7FA), InfoFg = C(0x0D3C8C);
 }
 
 class DbPanel : Panel
@@ -443,27 +448,51 @@ class Snackbar : Control
 {
     readonly Timer timer = new Timer();
     bool error;
+    string actionText;
+    Action action;
+    Rectangle actionRect;
+    bool actionHover;
+
     public Snackbar()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         Visible = false;
-        timer.Interval = 4500;
         timer.Tick += (s, e) => { timer.Stop(); Visible = false; };
         Cursor = Cursors.Hand;
     }
-    protected override void OnClick(EventArgs e) { Visible = false; base.OnClick(e); }
 
-    public void Show(string text, bool isError, Rectangle area)
+    protected override void OnMouseMove(MouseEventArgs e)
     {
-        Text = text; error = isError;
-        int w = Math.Min(area.Width - Theme.Dp(32), Theme.Measure(text, Theme.Body) + Theme.Dp(72));
+        bool h = actionText != null && actionRect.Contains(e.Location);
+        if (h != actionHover) { actionHover = h; Invalidate(); }
+        base.OnMouseMove(e);
+    }
+    protected override void OnMouseLeave(EventArgs e) { actionHover = false; Invalidate(); base.OnMouseLeave(e); }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        var a = action;
+        bool hitAction = actionText != null && actionRect.Contains(e.Location);
+        Visible = false; timer.Stop();
+        if (hitAction && a != null) a();
+        base.OnMouseClick(e);
+    }
+
+    public void Show(string text, bool isError, Rectangle area, string actionLabel = null, Action onAction = null)
+    {
+        Text = text; error = isError; actionText = actionLabel; action = onAction;
+        int actionW = actionText != null ? Theme.Measure(actionText, Theme.Label) + Theme.Dp(32) : 0;
+        int w = Math.Min(area.Width - Theme.Dp(32), Theme.Measure(text, Theme.Body) + Theme.Dp(72) + actionW);
         int h = Theme.Dp(48);
         Bounds = new Rectangle(area.X + (area.Width - w) / 2, area.Bottom - h - Theme.Dp(16), w, h);
+        actionRect = actionText != null ? new Rectangle(w - actionW - Theme.Dp(4), Theme.Dp(6), actionW, h - Theme.Dp(12)) : Rectangle.Empty;
         using (var p = Theme.Round(new RectangleF(0, 0, w, h), Theme.Dp(6))) Region = new Region(p);
         Visible = true;
         BringToFront();
         Invalidate();
-        timer.Stop(); timer.Start();
+        timer.Stop();
+        timer.Interval = actionText != null ? 9000 : 4500;
+        timer.Start();
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -473,7 +502,68 @@ class Snackbar : Control
         Color ic = error ? Color.FromArgb(255, 0xF2, 0xB8, 0xB5) : Theme.InversePrimary;
         Theme.Glyph(g, error ? Theme.GError : Theme.GDone, Theme.Icon, new Rectangle(Theme.Dp(14), 0, Theme.Dp(24), Height), ic);
         int x = Theme.HasIcons ? Theme.Dp(48) : Theme.Dp(16);
-        Theme.Text(g, Text, Theme.Body, new Rectangle(x, 0, Width - x - Theme.Dp(12), Height), Theme.InverseOnSurface);
+        int right = actionText != null ? actionRect.Left : Width - Theme.Dp(12);
+        Theme.Text(g, Text, Theme.Body, new Rectangle(x, 0, right - x, Height), Theme.InverseOnSurface);
+        if (actionText != null)
+        {
+            if (actionHover) Theme.FillRound(g, Theme.Alpha(Theme.InversePrimary, 0.12f), actionRect, actionRect.Height / 2f);
+            TextRenderer.DrawText(g, actionText, Theme.Label, actionRect, Theme.InversePrimary,
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter);
+        }
+    }
+}
+
+// Material-style confirmation dialog
+class ConfirmDialog : Form
+{
+    readonly string title, body;
+
+    ConfirmDialog(string title, string body, string okText)
+    {
+        this.title = title; this.body = body;
+        FormBorderStyle = FormBorderStyle.FixedDialog;
+        MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
+        StartPosition = FormStartPosition.CenterParent;
+        BackColor = Theme.SurfaceContainer;
+        Font = Theme.Body;
+        Text = "DPI Override";
+        SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+
+        int w = Theme.Dp(440);
+        int textW = w - Theme.Dp(48);
+        int bodyH = TextRenderer.MeasureText(body, Theme.Body, new Size(textW, int.MaxValue), TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix).Height;
+        ClientSize = new Size(w, Theme.Dp(24 + 32 + 16) + bodyH + Theme.Dp(24 + 40 + 20));
+
+        var ok = new MButton { Kind = ButtonKind.Filled, Text = okText };
+        var cancel = new MButton { Kind = ButtonKind.Text, Text = "Cancel" };
+        ok.Size = new Size(ok.PreferredWidth(), Theme.Dp(40));
+        cancel.Size = new Size(cancel.PreferredWidth(), Theme.Dp(40));
+        ok.Location = new Point(ClientSize.Width - Theme.Dp(24) - ok.Width, ClientSize.Height - Theme.Dp(20) - ok.Height);
+        cancel.Location = new Point(ok.Left - Theme.Dp(8) - cancel.Width, ok.Top);
+        ok.Click += (s, e) => { DialogResult = DialogResult.OK; Close(); };
+        cancel.Click += (s, e) => { DialogResult = DialogResult.Cancel; Close(); };
+        Controls.Add(ok); Controls.Add(cancel);
+        KeyPreview = true;
+        KeyDown += (s, e) =>
+        {
+            if (e.KeyCode == Keys.Enter) { DialogResult = DialogResult.OK; Close(); }
+            else if (e.KeyCode == Keys.Escape) { DialogResult = DialogResult.Cancel; Close(); }
+        };
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        var g = e.Graphics;
+        g.Clear(Theme.SurfaceContainer);
+        int x = Theme.Dp(24), w = ClientSize.Width - Theme.Dp(48);
+        Theme.Text(g, title, Theme.Title, new Rectangle(x, Theme.Dp(22), w, Theme.Dp(34)), Theme.OnSurface);
+        TextRenderer.DrawText(g, body, Theme.Body, new Rectangle(x, Theme.Dp(72), w, ClientSize.Height - Theme.Dp(72 + 80)),
+            Theme.OnSurfaceVariant, TextFormatFlags.WordBreak | TextFormatFlags.NoPrefix);
+    }
+
+    public static bool Ask(IWin32Window owner, string title, string body, string okText)
+    {
+        using (var d = new ConfirmDialog(title, body, okText)) return d.ShowDialog(owner) == DialogResult.OK;
     }
 }
 
@@ -485,6 +575,8 @@ class MainForm : Form
     readonly SearchBox search = new SearchBox();
     readonly Chip chipHide = new Chip();
     readonly Chip chipOverride = new Chip();
+    readonly Chip chipBlurry = new Chip();
+    readonly MButton btnRestart = new MButton();
     readonly MButton btnAdd = new MButton();
     readonly DbPanel content = new DbPanel();
     readonly DbPanel header = new DbPanel();
@@ -504,7 +596,9 @@ class MainForm : Form
     int sortCol = 0; bool sortAsc = true;
     int hoverIndex = -1;
 
-    static readonly string[] ColNames = { "PROGRAM", "ALL USERS", "CURRENT USER", "RUNNING", "LOCATION" };
+    static readonly string[] ColNames = { "PROGRAM", "ALL USERS", "CURRENT USER", "RENDERING", "LOCATION" };
+    List<int> monitorDpis = new List<int>();
+    bool restarting;
     static readonly string[] ModeKeys = { "Application", "System", "System (Enhanced)", "Not set" };
 
     [DllImport("dwmapi.dll")]
@@ -518,6 +612,7 @@ class MainForm : Form
         using (var g = Graphics.FromHwnd(IntPtr.Zero)) scale = g.DpiX / 96f;
         Theme.Init(scale);
 
+        current = this;
         Text = "DPI Override";
         Font = Theme.Body;
         BackColor = Theme.Surface;
@@ -561,10 +656,12 @@ class MainForm : Form
         chipHide.CheckedChanged += (s, e) => FillList();
         chipOverride.Text = "Only with override";
         chipOverride.CheckedChanged += (s, e) => FillList();
+        chipBlurry.Text = "Possibly blurry";
+        chipBlurry.CheckedChanged += (s, e) => FillList();
         btnAdd.Kind = ButtonKind.Tonal; btnAdd.Text = "Add program"; btnAdd.Glyph = Theme.GAdd;
         btnAdd.Click += (s, e) => Browse();
         new ToolTip().SetToolTip(btnAdd, "Pick an .exe that isn't running");
-        toolbar.Controls.AddRange(new Control[] { search, chipHide, chipOverride, btnAdd });
+        toolbar.Controls.AddRange(new Control[] { search, chipHide, chipOverride, chipBlurry, btnAdd });
         toolbar.Resize += (s, e) => LayoutToolbar();
         toolbar.Paint += PaintToolbar;
 
@@ -590,6 +687,7 @@ class MainForm : Form
         list.MultiSelect = true;
         list.HideSelection = false;
         list.OwnerDraw = true;
+        list.ShowItemToolTips = true;
         list.BackColor = Theme.Card;
         list.SmallImageList = new ImageList { ImageSize = new Size(1, Dp(56)) }; // row height
         for (int i = 0; i < ColNames.Length; i++) list.Columns.Add(ColNames[i], 100);
@@ -628,7 +726,11 @@ class MainForm : Form
         btnApply.Kind = ButtonKind.Filled; btnApply.Text = "Apply to selected"; btnApply.Glyph = Theme.GCheck;
         btnApply.Click += (s, e) => Apply();
         btnApply.Enabled = false;
-        bottom.Controls.AddRange(new Control[] { modes, btnApply });
+        btnRestart.Kind = ButtonKind.Tonal; btnRestart.Text = "Restart"; btnRestart.Glyph = Theme.GRefresh;
+        btnRestart.Enabled = false;
+        btnRestart.Click += (s, e) => RestartSelected();
+        new ToolTip().SetToolTip(btnRestart, "Close and reopen the selected running programs so a new setting takes effect");
+        bottom.Controls.AddRange(new Control[] { modes, btnRestart, btnApply });
         bottom.Resize += (s, e) => LayoutBottom();
 
         Controls.Add(content);
@@ -669,13 +771,16 @@ class MainForm : Form
         int x = Dp(28);
         int addW = btnAdd.PreferredWidth();
         btnAdd.Bounds = new Rectangle(toolbar.Width - Dp(28) - addW, y, addW, h);
-        int searchW = Math.Max(Dp(200), Math.Min(Dp(360), toolbar.Width - Dp(28) * 2 - addW - Dp(480)));
+        int chipsW = chipHide.PreferredWidth() + chipOverride.PreferredWidth() + chipBlurry.PreferredWidth() + Dp(16) + Dp(16);
+        int searchW = Math.Max(Dp(180), Math.Min(Dp(340), toolbar.Width - Dp(28) * 2 - addW - chipsW - Dp(110)));
         search.Bounds = new Rectangle(x, y, searchW, h);
         x += searchW + Dp(16);
         int ch = Dp(32), cy = y + (h - ch) / 2;
         chipHide.Bounds = new Rectangle(x, cy, chipHide.PreferredWidth(), ch);
         x += chipHide.Width + Dp(8);
         chipOverride.Bounds = new Rectangle(x, cy, chipOverride.PreferredWidth(), ch);
+        x += chipOverride.Width + Dp(8);
+        chipBlurry.Bounds = new Rectangle(x, cy, chipBlurry.PreferredWidth(), ch);
         toolbar.Invalidate();
     }
 
@@ -684,14 +789,16 @@ class MainForm : Form
         int h = Dp(40), y = (bottom.Height - h) / 2;
         int applyW = btnApply.PreferredWidth();
         btnApply.Bounds = new Rectangle(bottom.Width - Dp(28) - applyW, y, applyW, h);
+        int restartW = btnRestart.PreferredWidth();
+        btnRestart.Bounds = new Rectangle(btnApply.Left - Dp(8) - restartW, y, restartW, h);
         int segW = modes.PreferredWidth();
-        modes.Bounds = new Rectangle(btnApply.Left - Dp(24) - segW, y, segW, h);
+        modes.Bounds = new Rectangle(btnRestart.Left - Dp(24) - segW, y, segW, h);
         bottom.Invalidate();
     }
 
     int[] ColumnWidths(int total)
     {
-        int c1 = Dp(150), c2 = Dp(150), c3 = Dp(110);
+        int c1 = Dp(140), c2 = Dp(140), c3 = Dp(160);
         int rest = Math.Max(Dp(300), total - c1 - c2 - c3);
         int c0 = Math.Max(Dp(260), (int)(rest * 0.48f));
         int c4 = Math.Max(Dp(60), total - c0 - c1 - c2 - c3);
@@ -741,7 +848,7 @@ class MainForm : Form
         string count = shownCount == 1 ? "1 program" : shownCount + " programs";
         int w = Theme.Measure(count, Theme.Small) + Dp(8);
         int right = btnAdd.Left - Dp(16);
-        int left = chipOverride.Right + Dp(16);
+        int left = chipBlurry.Right + Dp(16);
         if (right - w > left)
             Theme.Text(g, count, Theme.Small, new Rectangle(right - w, btnAdd.Top, w, btnAdd.Height), Theme.OnSurfaceVariant, TextFormatFlags.Right);
     }
@@ -773,7 +880,7 @@ class MainForm : Form
         using (var pen = new Pen(Theme.OutlineVariant, 1f)) g.DrawLine(pen, 0, 0, bottom.Width, 0);
         int n = list.SelectedItems.Count;
         string title = n == 0 ? "Select programs in the list" : n == 1 ? "1 program selected" : n + " programs selected";
-        string sub = "Scaling performed by: " + ModeDescription() + "  ·  restart the program afterwards";
+        string sub = "Scaling performed by: " + ModeDescription() + "  ·  restart afterwards";
         int x = Dp(28), w = modes.Left - x - Dp(16);
         int mid = bottom.Height / 2;
         Theme.Text(g, title, Theme.BodyStrong, new Rectangle(x, mid - Dp(22), w, Dp(22)), Theme.OnSurface);
@@ -829,18 +936,89 @@ class MainForm : Form
         DrawModeChip(g, en.CurrentUser, new Rectangle(x + Dp(8), r.Y, w[2] - Dp(16), r.Height));
         x += w[2];
 
-        if (en.Running)
-        {
-            int d = Dp(8);
-            using (var b = new SolidBrush(Theme.Running)) g.FillEllipse(b, x + Dp(8), mid - d / 2, d, d);
-            Theme.Text(g, "Running", Theme.Small, new Rectangle(x + Dp(22), r.Y, w[3] - Dp(26), r.Height), Theme.OnSurfaceVariant);
-        }
-        else Theme.Text(g, "—", Theme.Small, new Rectangle(x + Dp(8), r.Y, w[3] - Dp(12), r.Height), Theme.OutlineVariant);
+        DrawRendering(g, en, new Rectangle(x + Dp(8), r.Y, w[3] - Dp(16), r.Height));
         x += w[3];
 
         string dir = "";
         try { dir = Path.GetDirectoryName(en.Path) ?? en.Path; } catch { dir = en.Path; }
         Theme.Text(g, dir, Theme.Small, new Rectangle(x + Dp(8), r.Y, w[4] - Dp(24), r.Height), Theme.OnSurfaceVariant, TextFormatFlags.PathEllipsis);
+    }
+
+    // ---------- Rendering (live DPI awareness) ----------
+    enum Look { NotRunning, Unknown, Sharp, MainOnly, Blurry, Enhanced, Unscaled }
+
+    bool AnyScaled { get { return monitorDpis.Count == 0 ? Theme.S > 1.01f : monitorDpis.Any(d => d > 96); } }
+    bool MixedDpi { get { return monitorDpis.Distinct().Count() > 1; } }
+
+    Look LookOf(Entry e)
+    {
+        if (!e.Running) return Look.NotRunning;
+        switch (e.Rendering)
+        {
+            case Awareness.PerMonitor:
+            case Awareness.PerMonitorV2: return Look.Sharp;
+            case Awareness.System: return MixedDpi ? Look.MainOnly : Look.Sharp;
+            case Awareness.GdiScaled: return AnyScaled ? Look.Enhanced : Look.Unscaled;
+            case Awareness.Unaware: return AnyScaled ? Look.Blurry : Look.Unscaled;
+            default: return Look.Unknown;
+        }
+    }
+
+    static int LookRank(Look l)
+    {
+        switch (l)
+        {
+            case Look.Blurry: return 0;
+            case Look.MainOnly: return 1;
+            case Look.Enhanced: return 2;
+            case Look.Unscaled: return 3;
+            case Look.Sharp: return 4;
+            case Look.Unknown: return 5;
+            default: return 6;
+        }
+    }
+
+    string LookTip(Entry e)
+    {
+        switch (LookOf(e))
+        {
+            case Look.Sharp: return e.Rendering == Awareness.System
+                ? "Renders sharp: it scales itself for your display."
+                : "Renders sharp: it scales itself on every display.";
+            case Look.MainOnly: return "Sharp on your main display, but Windows stretches it (blurry) on displays with a different scale. Try the Application override.";
+            case Look.Blurry: return "Windows stretches this program's image, so it looks blurry. Try the Application or System (Enhanced) override.";
+            case Look.Enhanced: return "Windows scales it with System (Enhanced): text is sharp, some graphics may still be blurry.";
+            case Look.Unscaled: return "Doesn't handle DPI itself, but your displays are at 100 %, so nothing is stretched.";
+            case Look.Unknown: return "Windows didn't report how this program scales (it may be protected).";
+            default: return "Not running. Start it to see how it renders.";
+        }
+    }
+
+    void DrawRendering(Graphics g, Entry e, Rectangle cell)
+    {
+        var look = LookOf(e);
+        string label; Color bg, fg;
+        switch (look)
+        {
+            case Look.Sharp: label = "Sharp"; bg = Theme.GoodBg; fg = Theme.GoodFg; break;
+            case Look.MainOnly: label = "Main screen only"; bg = Theme.WarnBg; fg = Theme.WarnFg; break;
+            case Look.Blurry: label = "Blurry"; bg = Theme.BadBg; fg = Theme.BadFg; break;
+            case Look.Enhanced: label = "GDI-scaled"; bg = Theme.InfoBg; fg = Theme.InfoFg; break;
+            case Look.Unscaled: label = "Unscaled"; bg = Theme.SurfaceContainerHigh; fg = Theme.OnSurfaceVariant; break;
+            case Look.Unknown: Theme.Text(g, "Unknown", Theme.Small, cell, Theme.Outline); return;
+            default: Theme.Text(g, "Not running", Theme.Small, cell, Theme.OutlineVariant); return;
+        }
+        DrawChip(g, label, bg, fg, cell);
+    }
+
+    void DrawChip(Graphics g, string label, Color bg, Color fg, Rectangle cell)
+    {
+        int h = Dp(26);
+        int cw = Math.Min(cell.Width, Theme.Measure(label, Theme.SmallStrong) + Dp(24));
+        var cr = new RectangleF(cell.X, cell.Y + (cell.Height - h) / 2f, cw, h);
+        Theme.FillRound(g, bg, cr, Dp(8));
+        TextRenderer.DrawText(g, label, Theme.SmallStrong, Rectangle.Round(cr), fg,
+            TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.EndEllipsis);
     }
 
     void DrawModeChip(Graphics g, string mode, Rectangle cell)
@@ -895,6 +1073,7 @@ class MainForm : Form
     void UpdateSelectionUi()
     {
         btnApply.Enabled = list.SelectedItems.Count > 0;
+        btnRestart.Enabled = !restarting && list.SelectedItems.Cast<ListViewItem>().Any(i => ((Entry)i.Tag).Running);
         bottom.Invalidate();
     }
 
@@ -932,11 +1111,12 @@ class MainForm : Form
         Cursor = Cursors.WaitCursor;
         try
         {
-            var running = Procs.RunningPaths();
+            var running = Program.Demo ? DemoRunning() : Procs.Running();
+            monitorDpis = Program.Demo ? new List<int> { 144, 96 } : DpiInfo.MonitorDpis();
             var lm = Compat.ReadAll(RegistryHive.LocalMachine);
             var cu = Compat.ReadAll(RegistryHive.CurrentUser);
 
-            var paths = new HashSet<string>(running, StringComparer.OrdinalIgnoreCase);
+            var paths = new HashSet<string>(running.Keys, StringComparer.OrdinalIgnoreCase);
             foreach (var kv in lm) if (Compat.ModeOf(kv.Value) != "Not set") paths.Add(kv.Key);
             foreach (var kv in cu) if (Compat.ModeOf(kv.Value) != "Not set") paths.Add(kv.Key);
             paths.UnionWith(extra);
@@ -944,7 +1124,9 @@ class MainForm : Form
             entries = paths.Select(p =>
             {
                 string a, c;
+                List<int> pids;
                 lm.TryGetValue(p, out a); cu.TryGetValue(p, out c);
+                if (!running.TryGetValue(p, out pids)) pids = new List<int>();
                 return new Entry
                 {
                     Path = p,
@@ -952,7 +1134,8 @@ class MainForm : Form
                     Display = Describe(p),
                     AllUsers = Compat.ModeOf(a),
                     CurrentUser = Compat.ModeOf(c),
-                    Running = running.Contains(p),
+                    Pids = pids,
+                    Rendering = pids.Count == 0 ? Awareness.Unknown : Program.Demo ? DemoAwareness(p) : DpiInfo.Best(pids),
                     System = p.StartsWith(winDir, StringComparison.OrdinalIgnoreCase),
                 };
             }).ToList();
@@ -967,6 +1150,9 @@ class MainForm : Form
         finally { Cursor = Cursors.Default; }
     }
 
+    static MainForm current;
+    static Look LookOfStatic(Entry e) { return current.LookOf(e); }
+
     static string Col(Entry e, int c)
     {
         switch (c)
@@ -974,7 +1160,7 @@ class MainForm : Form
             case 0: return e.Display;
             case 1: return e.AllUsers;
             case 2: return e.CurrentUser;
-            case 3: return e.Running ? "0" : "1";
+            case 3: return LookRank(LookOfStatic(e)).ToString();
             default: return e.Path;
         }
     }
@@ -988,6 +1174,7 @@ class MainForm : Form
         {
             bool hasOverride = e.AllUsers != "Not set" || e.CurrentUser != "Not set";
             if (chipOverride.Checked && !hasOverride) return false;
+            if (chipBlurry.Checked) { var l = LookOf(e); if (l != Look.Blurry && l != Look.MainOnly) return false; }
             if (chipHide.Checked && e.System && !hasOverride && !sel.Contains(e.Path)) return false;
             if (f.Length > 0 && (e.Display + " " + e.Path).IndexOf(f, StringComparison.OrdinalIgnoreCase) < 0) return false;
             return true;
@@ -1002,7 +1189,7 @@ class MainForm : Form
         int n = 0;
         foreach (var e in rows)
         {
-            var it = new ListViewItem(new[] { e.Display, e.AllUsers, e.CurrentUser, e.Running ? "Yes" : "No", e.Path }) { Tag = e };
+            var it = new ListViewItem(new[] { e.Display, e.AllUsers, e.CurrentUser, LookOf(e).ToString(), e.Path }) { Tag = e, ToolTipText = e.Display + "\n" + LookTip(e) };
             list.Items.Add(it);
             if (sel.Contains(e.Path)) { it.Selected = true; if (first == null) first = it; }
             n++;
@@ -1028,10 +1215,74 @@ class MainForm : Form
         }
     }
 
-    void ShowSnack(string text, bool error)
+    // ---------- Restart ----------
+    void RestartSelected()
+    {
+        var targets = list.SelectedItems.Cast<ListViewItem>().Select(i => (Entry)i.Tag).Where(e => e.Running).ToList();
+        RestartEntries(targets);
+    }
+
+    void RestartEntries(List<Entry> targets)
+    {
+        if (restarting || targets.Count == 0) return;
+        string names = targets.Count == 1 ? targets[0].Display
+                     : targets.Count == 2 ? targets[0].Display + " and " + targets[1].Display
+                     : targets.Count + " programs";
+        if (!ConfirmDialog.Ask(this, "Restart " + (targets.Count == 1 ? targets[0].Display : targets.Count + " programs") + "?",
+                names + " will be closed and started again so the new scaling setting takes effect. Unsaved work in " +
+                (targets.Count == 1 ? "it" : "them") + " may be lost.", "Restart"))
+            return;
+
+        restarting = true;
+        UpdateSelectionUi();
+        ShowSnack("Restarting " + names + "…", false);
+        var jobs = targets.Select(t => new { t.Path, t.Display, Pids = new List<int>(t.Pids) }).ToList();
+        var worker = new System.Threading.Thread(() =>
+        {
+            var errors = new List<string>();
+            foreach (var j in jobs)
+            {
+                string err;
+                try { err = Program.Demo ? null : Restarter.Restart(j.Path, j.Pids); }
+                catch (Exception ex) { err = ex.Message; }
+                if (err != null) { errors.Add(j.Display + ": " + err); Program.Log("restart failed for " + j.Path + ": " + err); }
+            }
+            System.Threading.Thread.Sleep(2500); // let the programs start before re-reading their DPI mode
+            BeginInvoke(new Action(() =>
+            {
+                restarting = false;
+                Reload();
+                if (errors.Count == 0) ShowSnack("Restarted " + names, false);
+                else ShowSnack(errors.Count == 1 ? "Couldn't restart " + errors[0] : errors.Count + " programs couldn't be restarted", true);
+            }));
+        });
+        worker.IsBackground = true;
+        worker.Start();
+    }
+
+    // ---------- Demo data (for testing the UI under Mono on Linux: --demo) ----------
+    static Dictionary<string, List<int>> DemoRunning()
+    {
+        var d = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
+        foreach (var p in new[] { @"C:\Program Files\Steam\steam.exe", @"C:\Riot Games\League of Legends\LeagueClient.exe",
+                                  @"C:\Games\Old.exe", @"C:\Tools\Legacy\setup-tool.exe", @"C:\Program Files\Notes\notes.exe" })
+            d[p] = new List<int> { 1 };
+        return d;
+    }
+
+    static Awareness DemoAwareness(string path)
+    {
+        if (path.EndsWith("steam.exe")) return Awareness.System;
+        if (path.EndsWith("LeagueClient.exe")) return Awareness.PerMonitorV2;
+        if (path.EndsWith("Old.exe")) return Awareness.GdiScaled;
+        if (path.EndsWith("setup-tool.exe")) return Awareness.Unaware;
+        return Awareness.PerMonitor;
+    }
+
+    void ShowSnack(string text, bool error, string actionLabel = null, Action onAction = null)
     {
         var area = new Rectangle(0, 0, ClientSize.Width, bottom.Top);
-        snack.Show(text, error, area);
+        snack.Show(text, error, area, actionLabel, onAction);
     }
 
     void Apply()
@@ -1070,7 +1321,11 @@ class MainForm : Form
         {
             string what = done.Count == 1 ? done[0] : done.Count + " programs";
             string m = mode == "Not set" ? "Override removed for " + what : modes.Items[modes.Selected] + " scaling set for " + what;
-            ShowSnack(m + ". Restart to apply.", false);
+            var runningApplied = entries.Where(en => paths.Contains(en.Path, StringComparer.OrdinalIgnoreCase) && en.Running).ToList();
+            if (runningApplied.Count > 0)
+                ShowSnack(m + ". Restart to apply.", false, "RESTART", () => RestartEntries(runningApplied));
+            else
+                ShowSnack(m + ".", false);
         }
     }
 }
