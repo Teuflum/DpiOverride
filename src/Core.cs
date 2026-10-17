@@ -140,13 +140,14 @@ static class Compat
     }
 }
 
-// "DPI scaling…" in Explorer's right-click menu for programs and shortcuts, for the current user (no admin rights
+// "DPI scaling override…" in Explorer's right-click menu for programs and shortcuts, for the current user (no admin rights
 // needed). It runs DpiOverride.exe "<file>", which adds and selects the file. (On Windows 11 it's under "Show more
 // options": only packaged apps can add to the new compact menu.) Versions that ran as admin registered it for all
 // users; that entry is still recognized and removed with admin rights.
 static class ExplorerMenu
 {
     const string Verb = "DpiOverride";
+    public const string Label = "DPI scaling override…";
     static readonly string[] FileClasses = { "exefile", "lnkfile" };
 
     static RegistryKey Classes(bool write, RegistryHive hive = RegistryHive.CurrentUser)
@@ -194,7 +195,7 @@ static class ExplorerMenu
         {
             using (var k = classes.CreateSubKey(cls + @"\shell\" + Verb))
             {
-                k.SetValue("", "DPI scaling\u2026");
+                k.SetValue("", Label);
                 k.SetValue("Icon", "\"" + exe + "\",0");
                 using (var cmd = k.CreateSubKey("command")) cmd.SetValue("", Command(exe));
             }
@@ -210,15 +211,19 @@ static class ExplorerMenu
                 if (shell != null) shell.DeleteSubKeyTree(Verb, false);
     }
 
-    // After the program was moved, points the entry at its new place
+    // Brings an existing entry up to date: the program's current place (after it was moved) and the current label
     public static void KeepCurrent(string exe)
     {
         try
         {
-            string now = Registered();
-            if (now == null || string.Equals(now, exe, StringComparison.OrdinalIgnoreCase)) return;
+            string now = Registered(), label;
+            if (now == null) return;
+            using (var c = Classes(false))
+            using (var k = c.OpenSubKey(FileClasses[0] + @"\shell\" + Verb))
+                label = k == null ? null : Convert.ToString(k.GetValue(""));
+            if (string.Equals(now, exe, StringComparison.OrdinalIgnoreCase) && label == Label) return;
             Register(exe);
-            Program.Log("Explorer entry moved from " + now + " to " + exe);
+            Program.Log("Explorer entry updated: " + now + " [" + label + "] -> " + exe + " [" + Label + "]");
         }
         catch (Exception ex) { Program.Log("couldn't update the Explorer entry: " + ex.Message); }
     }
@@ -990,6 +995,9 @@ static class Program
             Log("handed " + StartPaths.Count + " path(s) to the open window");
             return 0;
         }
+
+        // Here rather than in MainForm, so test programs that open the window don't point the entry at themselves
+        if (onWindows && !Demo) ExplorerMenu.KeepCurrent(Application.ExecutablePath);
 
         // The app runs as the normal user; only changes for all users ask for admin rights (AllUsers.Set)
         if (onWindows) { try { SetProcessDPIAware(); } catch { } }

@@ -749,7 +749,7 @@ class AppBar : Control
         }
         int mid = Height / 2;
         Theme.Text(g, "DPI Override", Theme.Title, new Rectangle(x, mid - Theme.Dp(24), Width - x - Theme.Dp(80), Theme.Dp(28)), Theme.OnAppBar);
-        Theme.Text(g, "High-DPI scaling override for all users", Theme.Subtitle,
+        Theme.Text(g, "High-DPI scaling override for any program", Theme.Subtitle,
             new Rectangle(x, mid + Theme.Dp(2), Width - x - Theme.Dp(80), Theme.Dp(20)), Theme.OnAppBarVariant);
     }
 }
@@ -1017,7 +1017,8 @@ class MainForm : Form
             undoItem.Text = undo.Count > 0 ? "Undo: " + Shorten(undo[undo.Count - 1].Label, 48) : "Nothing to undo";
             bool onWindows = Environment.OSVersion.Platform == PlatformID.Win32NT;
             explorerItem.Visible = explorerSep.Visible = onWindows;
-            if (onWindows) explorerItem.Text = ExplorerEntryOn() ? "Remove “DPI scaling…” from Explorer" : "Add “DPI scaling…” to Explorer";
+            string label = "“" + ExplorerMenu.Label + "”";
+            if (onWindows) explorerItem.Text = ExplorerEntryOn() ? "Remove " + label + " from Explorer" : "Add " + label + " to Explorer";
             moreMenu.Show(btnMore, new Point(btnMore.Width, btnMore.Height + Dp(4)), ToolStripDropDownDirection.BelowLeft);
         };
         appBar.Controls.Add(btnMore);
@@ -1138,7 +1139,6 @@ class MainForm : Form
         Activated += (s, e) => FollowWindowsTheme();   // also catches a switch the window wasn't told about
         Shown += (s, e) =>
         {
-            if (Environment.OSVersion.Platform == PlatformID.Win32NT && !Program.Demo) ExplorerMenu.KeepCurrent(Application.ExecutablePath);
             Reload();
             list.Focus();
             if (Program.StartPaths.Count > 0) AddPaths(Program.StartPaths);
@@ -1838,7 +1838,8 @@ class MainForm : Form
             bool hasOverride = e.AllUsers != "Not set" || e.CurrentUser != "Not set";
             if (chipOverride.Checked && !hasOverride) return false;
             if (chipBlurry.Checked) { var l = LookOf(e); if (l != Look.Blurry && l != Look.MainOnly) return false; }
-            if (chipHide.Checked && e.System && !hasOverride && !sel.Contains(e.Path)) return false;
+            // Windows programs the user added (Add, drop, Explorer) stay; merely selected ones are filtered like the rest
+            if (chipHide.Checked && e.System && !hasOverride && !extra.Contains(e.Path)) return false;
             if (f.Length > 0 && (e.Display + " " + e.Path).IndexOf(f, StringComparison.OrdinalIgnoreCase) < 0) return false;
             return true;
         }).ToList();
@@ -1900,6 +1901,7 @@ class MainForm : Form
         if (first != null && scroll) first.EnsureVisible();
         shownCount = shown.Count;
         empty.Visible = shown.Count == 0;
+        list.Visible = shown.Count > 0;   // an empty themed list draws column lines; the card behind it is plain
         PlaceEmpty();
         toolbar.Invalidate();
         UpdateSelectionUi();
@@ -2084,8 +2086,9 @@ class MainForm : Form
             }
             else ExplorerMenu.Register(Application.ExecutablePath);
             Program.Log((on ? "removed" : "added") + " the Explorer entry");
-            ShowSnack(on ? "Removed “DPI scaling…” from Explorer"
-                         : "Right-click a program or shortcut in Explorer and choose “DPI scaling…” (on Windows 11 under Show more options)", false);
+            string label = "“" + ExplorerMenu.Label + "”";
+            ShowSnack(on ? "Removed " + label + " from Explorer"
+                         : "Right-click a program or shortcut in Explorer and choose " + label + " (on Windows 11 under Show more options)", false);
         }
         catch (Exception ex)
         {

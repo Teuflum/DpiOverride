@@ -431,7 +431,7 @@ static class MessageFilter
     }
 }
 
-// A second launch (e.g. from Explorer's "DPI scaling…") hands its paths to the window that's already open instead
+// A second launch (e.g. from Explorer's "DPI scaling override…") hands its paths to the window that's already open instead
 // of opening another one with another UAC prompt. The paths go in a WM_COPYDATA marked with Magic; the open window
 // answers 1, any other window answers 0. The open window lets WM_COPYDATA through the elevation filter (FileDrop.Enable).
 static class SingleInstance

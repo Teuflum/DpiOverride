@@ -71,7 +71,7 @@ writable without admin rights.
 **Dark mode:** follows Windows' app mode (Settings → Personalization → Colors), also when it's switched while the
 tool is open. File dialogs and tooltips are drawn by Windows and keep their own look.
 
-**Explorer entry:** ⋯ → *Add "DPI scaling…" to Explorer* adds that item to the right-click menu of every program
+**Explorer entry:** ⋯ → *Add "DPI scaling override…" to Explorer* adds that item to the right-click menu of every program
 and shortcut, for your user account (no admin rights needed). It opens DPI Override with that program added and selected. On Windows 11 it's under
 *Show more options* (only packaged apps can add to the new compact menu). The entry follows the tool if its
 .exe is moved, and the same menu item removes it again.
