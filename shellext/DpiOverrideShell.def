@@ -1,0 +1,4 @@
+LIBRARY DpiOverrideShell
+EXPORTS
+    DllGetClassObject PRIVATE
+    DllCanUnloadNow PRIVATE

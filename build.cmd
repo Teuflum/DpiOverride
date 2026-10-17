@@ -10,3 +10,6 @@ if not exist bin mkdir bin
   /resource:assets\app.ico,app.ico /resource:assets\logo.png,logo.png ^
   /r:System.Windows.Forms.dll /r:System.Drawing.dll /r:System.Core.dll ^
   /out:bin\DpiOverride.exe src\*.cs
+if errorlevel 1 exit /b 1
+rem the Windows 11 context menu DLL (skipped when the C++ build tools aren't installed)
+call "%~dp0build-shellext.cmd"
