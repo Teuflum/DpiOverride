@@ -278,24 +278,17 @@ class DbListView : ListView
         public IntPtr dwItemSpec; public uint uItemState; public IntPtr lItemlParam;
     }
 
-    // In details view WinForms lets the list keep drawing after DrawItem, and a themed list (dark scrollbars need
-    // the Explorer theme) then paints its own translucent selection over the owner-drawn row. So the list is asked
-    // for a post-paint notification and the row is drawn once more on top.
+    // DrawItem paints the whole row, but in details view WinForms lets the list keep drawing after it (for
+    // DrawSubItem), and a themed list (dark scrollbars need the Explorer theme) then paints its own translucent
+    // selection over the row: a blue flash whenever a row is repainted. Once DrawItem has run, the list is told to
+    // skip its own drawing of the item.
     protected override void WndProc(ref Message m)
     {
         base.WndProc(ref m);
         if (m.Msg != 0x204E /* WM_REFLECT + WM_NOTIFY */ || !OwnerDraw) return;
         var cd = (NMCUSTOMDRAW)Marshal.PtrToStructure(m.LParam, typeof(NMCUSTOMDRAW));
-        if (cd.hdr.code != -12 /* NM_CUSTOMDRAW */) return;
-        if (cd.dwDrawStage == 0x10001 /* CDDS_ITEMPREPAINT */)
-            m.Result = (IntPtr)(m.Result.ToInt64() | 0x10 /* CDRF_NOTIFYPOSTPAINT */);
-        else if (cd.dwDrawStage == 0x10002 /* CDDS_ITEMPOSTPAINT */)
-        {
-            int i = (int)cd.dwItemSpec.ToInt64();
-            if (i < 0 || i >= Items.Count) return;
-            using (var g = Graphics.FromHdc(cd.hdc))
-                OnDrawItem(new DrawListViewItemEventArgs(g, Items[i], GetItemRect(i), i, 0));
-        }
+        if (cd.hdr.code == -12 /* NM_CUSTOMDRAW */ && cd.dwDrawStage == 0x10001 /* CDDS_ITEMPREPAINT */)
+            m.Result = (IntPtr)0x4 /* CDRF_SKIPDEFAULT */;
     }
 }
 
@@ -1077,7 +1070,7 @@ class MainForm : Form
         list.MultiSelect = true;
         list.HideSelection = false;
         list.OwnerDraw = true;
-        list.ShowItemToolTips = true;
+        list.ShowItemToolTips = false;   // the rows show everything; tooltips only repeated it
         list.HandleCreated += (s, e) => Theme.Scrollbars(list.Handle);
         list.SmallImageList = new ImageList { ImageSize = new Size(1, Dp(56)) }; // row height
         for (int i = 0; i < ColNames.Length; i++) list.Columns.Add(ColNames[i], 100);
@@ -1529,22 +1522,6 @@ class MainForm : Form
         }
     }
 
-    string LookTip(Entry e)
-    {
-        switch (LookOf(e))
-        {
-            case Look.Sharp: return e.Rendering == Awareness.System
-                ? "Renders sharp: it scales itself for your display."
-                : "Renders sharp: it scales itself on every display.";
-            case Look.MainOnly: return "Sharp on your main display, but Windows stretches it (blurry) on displays with a different scale. Try the Application override.";
-            case Look.Blurry: return "Windows stretches this program's image, so it looks blurry. Try the Application or System (Enhanced) override.";
-            case Look.Enhanced: return "Windows scales it with System (Enhanced): text is sharp, some graphics may still be blurry.";
-            case Look.Unscaled: return "Doesn't handle DPI itself, but your displays are at 100 %, so nothing is stretched.";
-            case Look.Unknown: return "Windows didn't report how this program scales (it may be protected).";
-            case Look.NoWindow: return "Running in the background without a window, so there's nothing on screen that could look blurry.";
-            default: return "Not running. Start it to see how it renders.";
-        }
-    }
 
     void DrawLook(Graphics g, Look look, Rectangle cell)
     {
@@ -1895,18 +1872,13 @@ class MainForm : Form
             ListViewItem it;
             if (row.IsGroup)
             {
-                var names = row.Group.Members.Select(m => m.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
-                string tip = row.Group.Name + " (" + names.Count + " programs)\n" + string.Join("\n", names.Take(12)) +
-                             (names.Count > 12 ? "\n…" : "");
                 it = new ListViewItem(new[] { row.Group.Name, GroupMode(row.Group, true), GroupMode(row.Group, false), LookOf(row.Group).ToString(), row.Group.Root })
-                     { Tag = row, ToolTipText = tip };
+                     { Tag = row };
             }
             else
             {
                 var e = row.Entry;
-                it = new ListViewItem(new[] { e.Display, e.AllUsers, e.CurrentUser, LookOf(e).ToString(), e.Path })
-                     { Tag = row, ToolTipText = e.Display + "\n" + LookTip(e) +
-                       (Ignored(e) ? "\nYour own setting (" + e.CurrentUser + ") is ignored: Windows uses the all-users setting." : "") };
+                it = new ListViewItem(new[] { e.Display, e.AllUsers, e.CurrentUser, LookOf(e).ToString(), e.Path }) { Tag = row };
             }
             row.Item = it;
             list.Items.Add(it);
