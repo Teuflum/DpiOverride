@@ -837,7 +837,7 @@ class MainForm : Form
         addMenu.Add("All programs in a folder…", Theme.GFolder, BrowseFolder);
         addHereSep = addMenu.AddSeparator();
         addHere = addMenu.Add("", Theme.GFolder, () => AddPaths(new[] { addHereDir }));
-        new ToolTip().SetToolTip(btnAdd, "Add a program that isn't running, or every program in a folder");
+        new ToolTip().SetToolTip(btnAdd, "Add a program that isn't running, or every program in a folder. You can also drop programs, shortcuts and folders onto the window.");
         toolbar.Controls.AddRange(new Control[] { search, chipHide, chipOverride, chipBlurry, btnAdd });
         toolbar.Resize += (s, e) => LayoutToolbar();
         toolbar.Paint += PaintToolbar;
@@ -923,6 +923,7 @@ class MainForm : Form
         Controls.Add(snack);
 
         LayoutToolbar(); LayoutBottom();
+        if (Environment.OSVersion.Platform != PlatformID.Win32NT) { EnableOleDrop(this); EnableOleDrop(list); }
         Shown += (s, e) =>
         {
             Reload();
@@ -943,6 +944,48 @@ class MainForm : Form
             DwmSetWindowAttribute(Handle, 36 /* DWMWA_TEXT_COLOR */, ref txt, 4);
         }
         catch { }
+        if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+        {
+            try { FileDrop.Enable(Handle); } catch (Exception ex) { Program.Log("drop setup failed: " + ex.Message); }
+        }
+    }
+
+    // WinForms rewrites the window's extended style from CreateParams (e.g. when it's shown), which would drop the
+    // WS_EX_ACCEPTFILES that DragAcceptFiles sets, so it's part of CreateParams
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT) cp.ExStyle |= 0x10 /* WS_EX_ACCEPTFILES */;
+            return cp;
+        }
+    }
+
+    // Programs, shortcuts and folders dropped onto the window (Windows: WM_DROPFILES, see FileDrop)
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == FileDrop.WM_DROPFILES)
+        {
+            var paths = FileDrop.Paths(m.WParam);
+            Program.Log("dropped " + paths.Count + ": " + string.Join(" | ", paths));
+            Activate();
+            BeginInvoke(new Action(() => AddPaths(paths)));   // lets Explorer finish the drag before any dialog
+            return;
+        }
+        base.WndProc(ref m);
+    }
+
+    // OLE drag and drop, for Mono (on Windows the elevated window only gets WM_DROPFILES)
+    void EnableOleDrop(Control c)
+    {
+        c.AllowDrop = true;
+        c.DragEnter += (s, e) => e.Effect = e.Data.GetDataPresent(DataFormats.FileDrop) ? DragDropEffects.Copy : DragDropEffects.None;
+        c.DragDrop += (s, e) =>
+        {
+            var files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files != null) BeginInvoke(new Action(() => AddPaths(files)));
+        };
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -1657,6 +1700,18 @@ class MainForm : Form
         foreach (var raw in paths)
         {
             string p = raw;
+            if (p.EndsWith(".lnk", StringComparison.OrdinalIgnoreCase) && File.Exists(p))
+            {
+                string target = Shortcut.Target(p);
+                if (target == null)
+                {
+                    errors.Add("The shortcut " + Path.GetFileNameWithoutExtension(p) + " doesn't point to a program file (Store apps have none)");
+                    continue;
+                }
+                string real = File.Exists(target) ? Grouping.RealProgram(target) : target;
+                Program.Log("shortcut " + p + " -> " + target + (real != target ? " -> " + real : ""));
+                p = real;
+            }
             if (Directory.Exists(p))
             {
                 var exes = ScanFolder(p);
@@ -1668,7 +1723,7 @@ class MainForm : Form
                 folders++;
             }
             else if (File.Exists(p) && p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) added.Add(p);
-            else errors.Add("Not a program or folder: " + p);
+            else errors.Add("Not a program or folder: " + Grouping.FileName(p));
         }
         foreach (var err in errors) Program.Log(err);
         if (added.Count == 0)
