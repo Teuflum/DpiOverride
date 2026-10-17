@@ -521,7 +521,7 @@ class Chip : MControl
 
     public int PreferredWidth()
     {
-        return Theme.Measure(Text, Theme.Label) + Theme.Dp(32) + (Theme.HasIcons ? Theme.Dp(26) : 0);
+        return Theme.Measure(Text, Theme.Label) + Theme.Dp(40);
     }
 
     protected override void OnClick(EventArgs e) { Checked = !Checked; base.OnClick(e); }
@@ -536,14 +536,9 @@ class Chip : MControl
         else Theme.StrokeRound(g, Theme.OutlineVariant, Math.Max(1f, Theme.S), r, rad);
         if (StateAlpha > 0) Theme.FillRound(g, Theme.Alpha(fg, StateAlpha), r, rad);
 
-        int x = Theme.Dp(16);
-        if (Theme.HasIcons)
-        {
-            if (isChecked) Theme.Glyph(g, Theme.GCheck, Theme.IconSmall, new Rectangle(Theme.Dp(10), 0, Theme.Dp(18), Height), fg);
-            x = isChecked ? Theme.Dp(34) : Theme.Dp(16) + Theme.Dp(9);
-        }
-        TextRenderer.DrawText(g, Text, Theme.Label, new Rectangle(x, 0, Width - x, Height), fg,
-            TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        // No checkmark: the filled background already shows it's on, and the text stays put when it's toggled
+        TextRenderer.DrawText(g, Text, Theme.Label, ClientRectangle, fg,
+            TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
     }
 }
 
