@@ -56,6 +56,9 @@ The output is `bin/DpiOverride.exe`.
 When DPI Override is already open, a second launch hands its paths to that window and brings it to the front instead
 of opening another window (and another UAC prompt).
 
+**Dark mode:** follows Windows' app mode (Settings → Personalization → Colors), also when it's switched while the
+tool is open. File dialogs and tooltips are drawn by Windows and keep their own look.
+
 **Explorer entry:** ⋯ → *Add "DPI scaling…" to Explorer* adds that item to the right-click menu of every program
 and shortcut, for all users. It opens DPI Override with that program added and selected. On Windows 11 it's under
 *Show more options* (only packaged apps can add to the new compact menu). The entry follows the tool if its

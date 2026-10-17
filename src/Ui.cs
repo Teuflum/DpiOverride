@@ -18,27 +18,96 @@ static class Theme
 
     static Color C(int rgb) { return Color.FromArgb(255, (rgb >> 16) & 255, (rgb >> 8) & 255, rgb & 255); }
 
-    // Material 3 baseline (purple) palette
-    public static readonly Color Primary = C(0x6750A4);
-    public static readonly Color OnPrimary = Color.White;
-    public static readonly Color PrimaryContainer = C(0xEADDFF);
-    public static readonly Color OnPrimaryContainer = C(0x21005D);
-    public static readonly Color SecondaryContainer = C(0xE8DEF8);
-    public static readonly Color OnSecondaryContainer = C(0x1D192B);
-    public static readonly Color Surface = C(0xFEF7FF);
-    public static readonly Color SurfaceContainer = C(0xF3EDF7);
-    public static readonly Color SurfaceContainerHigh = C(0xECE6F0);
-    public static readonly Color Card = Color.White;
-    public static readonly Color OnSurface = C(0x1D1B20);
-    public static readonly Color OnSurfaceVariant = C(0x49454F);
-    public static readonly Color Outline = C(0x79747E);
-    public static readonly Color OutlineVariant = C(0xCAC4D0);
-    public static readonly Color Divider = C(0xEFEAF3);
-    public static readonly Color InverseSurface = C(0x322F35);
-    public static readonly Color InverseOnSurface = C(0xF5EFF7);
-    public static readonly Color InversePrimary = C(0xD0BCFF);
-    public static readonly Color Error = C(0xB3261E);
-    public static readonly Color Running = C(0x2E7D32);
+    // Material 3 baseline (purple) palette, light or dark (SetDark)
+    public static bool Dark;
+    public static Color Primary, OnPrimary, PrimaryContainer, OnPrimaryContainer, SecondaryContainer, OnSecondaryContainer,
+                        Surface, SurfaceContainer, SurfaceContainerHigh, Card, OnSurface, OnSurfaceVariant, Outline, OutlineVariant,
+                        Divider, InverseSurface, InverseOnSurface, InversePrimary, Error, Running,
+                        AppBar, OnAppBar, OnAppBarVariant,   // the purple title bar, which stays deep purple when dark
+                        SnackError, Shadow;
+    public static Color GoodBg, GoodFg, WarnBg, WarnFg, BadBg, BadFg, InfoBg, InfoFg;
+
+    static Theme() { SetDark(false); }
+
+    public static void SetDark(bool dark)
+    {
+        Dark = dark;
+        if (!dark)
+        {
+            Primary = C(0x6750A4); OnPrimary = Color.White; PrimaryContainer = C(0xEADDFF); OnPrimaryContainer = C(0x21005D);
+            SecondaryContainer = C(0xE8DEF8); OnSecondaryContainer = C(0x1D192B);
+            Surface = C(0xFEF7FF); SurfaceContainer = C(0xF3EDF7); SurfaceContainerHigh = C(0xECE6F0); Card = Color.White;
+            OnSurface = C(0x1D1B20); OnSurfaceVariant = C(0x49454F); Outline = C(0x79747E); OutlineVariant = C(0xCAC4D0);
+            Divider = C(0xEFEAF3); InverseSurface = C(0x322F35); InverseOnSurface = C(0xF5EFF7); InversePrimary = C(0xD0BCFF);
+            Error = C(0xB3261E); Running = C(0x2E7D32);
+            AppBar = C(0x6750A4); OnAppBar = Color.White; OnAppBarVariant = C(0xF5EFF7);
+            SnackError = C(0xF2B8B5); Shadow = C(0x3C2864);
+            GoodBg = C(0xDCF3E2); GoodFg = C(0x1B5E20); WarnBg = C(0xFFE9C7); WarnFg = C(0x7A4100);
+            BadBg = C(0xFFDAD6); BadFg = C(0x8C1D18); InfoBg = C(0xDCE7FA); InfoFg = C(0x0D3C8C);
+        }
+        else
+        {
+            Primary = C(0xD0BCFF); OnPrimary = C(0x381E72); PrimaryContainer = C(0x4F378B); OnPrimaryContainer = C(0xEADDFF);
+            SecondaryContainer = C(0x4A4458); OnSecondaryContainer = C(0xE8DEF8);
+            Surface = C(0x141218); SurfaceContainer = C(0x211F26); SurfaceContainerHigh = C(0x2B2930); Card = C(0x1D1B20);
+            OnSurface = C(0xE6E0E9); OnSurfaceVariant = C(0xCAC4D0); Outline = C(0x938F99); OutlineVariant = C(0x49454F);
+            Divider = C(0x2B2930); InverseSurface = C(0xE6E0E9); InverseOnSurface = C(0x322F35); InversePrimary = C(0x6750A4);
+            Error = C(0xF2B8B5); Running = C(0x81C784);
+            AppBar = C(0x4F378B); OnAppBar = C(0xEADDFF); OnAppBarVariant = C(0xCCC2DC);
+            SnackError = C(0xB3261E); Shadow = Color.Black;
+            GoodBg = C(0x1F3D26); GoodFg = C(0xA8DAB0); WarnBg = C(0x4A3000); WarnFg = C(0xFFCF8F);
+            BadBg = C(0x601410); BadFg = C(0xFFB4AB); InfoBg = C(0x1B2F52); InfoFg = C(0xB3C8F5);
+        }
+    }
+
+    // Windows' "Choose your app mode" (Settings > Personalization > Colors); ForceDark overrides it (tests, --theme)
+    public static bool? ForceDark;
+
+    public static bool SystemDark()
+    {
+        if (ForceDark.HasValue) return ForceDark.Value;
+        try
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize"))
+            {
+                var v = k == null ? null : k.GetValue("AppsUseLightTheme");
+                return v is int && (int)v == 0;
+            }
+        }
+        catch { return false; }
+    }
+
+    [DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    [DllImport("uxtheme.dll", CharSet = CharSet.Unicode)]
+    static extern int SetWindowTheme(IntPtr hwnd, string app, string idList);
+
+    // Dark or light window frame (title bar buttons, borders) for windows that don't color their caption themselves
+    public static void Frame(IntPtr hwnd)
+    {
+        try { int d = Dark ? 1 : 0; DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, ref d, 4); } catch { }
+    }
+
+    // Title bar and border in the given colors (Windows 11; otherwise ignored). Overrides the accent-colored title
+    // bar that Windows may use.
+    public static void Caption(IntPtr hwnd, Color bg, Color fg)
+    {
+        try
+        {
+            int cap = bg.R | (bg.G << 8) | (bg.B << 16), txt = fg.R | (fg.G << 8) | (fg.B << 16);
+            DwmSetWindowAttribute(hwnd, 35 /* DWMWA_CAPTION_COLOR */, ref cap, 4);
+            DwmSetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, ref cap, 4);
+            DwmSetWindowAttribute(hwnd, 36 /* DWMWA_TEXT_COLOR */, ref txt, 4);
+        }
+        catch { }
+    }
+
+    // Dark or light scrollbars on a list (DbListView keeps the theme from painting its own selection);
+    // null goes back to the default look
+    public static void Scrollbars(IntPtr hwnd)
+    {
+        try { SetWindowTheme(hwnd, Dark ? "DarkMode_Explorer" : null, null); } catch { }
+    }
 
     public const string GFile = "\uE8A5", GFolder = "\uE8B7", GOpenFolder = "\uE838", GCopy = "\uE8C8", GRemove = "\uE711",
                         GMore = "\uE712", GSave = "\uE74E", GOpenFile = "\uE8E5", GUndo = "\uE7A7";
@@ -175,17 +244,12 @@ static class Theme
     {
         switch (mode)
         {
-            case "Application": bg = C(0xDCF3E2); fg = C(0x1B5E20); break;
-            case "System": bg = C(0xDCE7FA); fg = C(0x0D3C8C); break;
-            case "System (Enhanced)": bg = C(0xFFE9C7); fg = C(0x7A4100); break;
+            case "Application": bg = GoodBg; fg = GoodFg; break;
+            case "System": bg = InfoBg; fg = InfoFg; break;
+            case "System (Enhanced)": bg = WarnBg; fg = WarnFg; break;
             default: bg = Color.Empty; fg = Outline; break;
         }
     }
-
-    public static readonly Color GoodBg = C(0xDCF3E2), GoodFg = C(0x1B5E20);
-    public static readonly Color WarnBg = C(0xFFE9C7), WarnFg = C(0x7A4100);
-    public static readonly Color BadBg = C(0xFFDAD6), BadFg = C(0x8C1D18);
-    public static readonly Color InfoBg = C(0xDCE7FA), InfoFg = C(0x0D3C8C);
 }
 
 class DbPanel : Panel
@@ -199,6 +263,38 @@ class DbPanel : Panel
 class DbListView : ListView
 {
     public DbListView() { DoubleBuffered = true; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct NMHDR { public IntPtr hwndFrom; public UIntPtr idFrom; public int code; }
+
+    // NMHDR stays a nested struct: on 64-bit it's padded to 24 bytes before dwDrawStage
+    [StructLayout(LayoutKind.Sequential)]
+    struct NMCUSTOMDRAW
+    {
+        public NMHDR hdr;
+        public int dwDrawStage; public IntPtr hdc; public int left, top, right, bottom;
+        public IntPtr dwItemSpec; public uint uItemState; public IntPtr lItemlParam;
+    }
+
+    // In details view WinForms lets the list keep drawing after DrawItem, and a themed list (dark scrollbars need
+    // the Explorer theme) then paints its own translucent selection over the owner-drawn row. So the list is asked
+    // for a post-paint notification and the row is drawn once more on top.
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        if (m.Msg != 0x204E /* WM_REFLECT + WM_NOTIFY */ || !OwnerDraw) return;
+        var cd = (NMCUSTOMDRAW)Marshal.PtrToStructure(m.LParam, typeof(NMCUSTOMDRAW));
+        if (cd.hdr.code != -12 /* NM_CUSTOMDRAW */) return;
+        if (cd.dwDrawStage == 0x10001 /* CDDS_ITEMPREPAINT */)
+            m.Result = (IntPtr)(m.Result.ToInt64() | 0x10 /* CDRF_NOTIFYPOSTPAINT */);
+        else if (cd.dwDrawStage == 0x10002 /* CDDS_ITEMPOSTPAINT */)
+        {
+            int i = (int)cd.dwItemSpec.ToInt64();
+            if (i < 0 || i >= Items.Count) return;
+            using (var g = Graphics.FromHdc(cd.hdc))
+                OnDrawItem(new DrawListViewItemEventArgs(g, Items[i], GetItemRect(i), i, 0));
+        }
+    }
 }
 
 // Base for owner-drawn interactive controls with hover/pressed state layers
@@ -296,7 +392,19 @@ class MMenu : ContextMenuStrip
         ShowImageMargin = Theme.HasIcons;
         ImageScalingSize = new Size(Theme.Dp(20), Theme.Dp(20));
         Padding = new Padding(0, Theme.Dp(6), 0, Theme.Dp(6));
+        // icons are bitmaps in the theme's color: redraw them after a switch between light and dark
+        if (iconColor != Theme.OnSurfaceVariant)
+        {
+            iconColor = Theme.OnSurfaceVariant;
+            foreach (ToolStripItem it in Items)
+            {
+                var glyph = it.Tag as string;
+                if (glyph != null) it.Image = Theme.GlyphImage(glyph, iconColor);
+            }
+        }
     }
+
+    Color iconColor;
 
     protected override void OnOpening(System.ComponentModel.CancelEventArgs e)
     {
@@ -313,7 +421,7 @@ class MMenu : ContextMenuStrip
 
     public ToolStripMenuItem Add(string text, string glyph, Action onClick)
     {
-        var it = new ToolStripMenuItem(text) { Image = glyph != null ? Theme.GlyphImage(glyph, Theme.OnSurfaceVariant) : null };
+        var it = new ToolStripMenuItem(text) { Image = glyph != null ? Theme.GlyphImage(glyph, Theme.OnSurfaceVariant) : null, Tag = glyph };
         it.Font = Theme.Body;
         it.Padding = new Padding(Theme.Dp(4), Theme.Dp(7), Theme.Dp(16), Theme.Dp(7));
         it.Click += (s, e) => onClick();
@@ -388,7 +496,8 @@ class MMenu : ContextMenuStrip
 class IconButton : MControl
 {
     public string Glyph;
-    public Color Fore = Theme.OnSurfaceVariant;
+    public Func<Color> ForeOf = () => Theme.OnSurfaceVariant;   // read when painting, so it follows light/dark
+    Color Fore { get { return ForeOf(); } }
 
     protected override void OnPaint(PaintEventArgs e)
     {
@@ -549,6 +658,13 @@ class SearchBox : Control
         Controls.Add(clear);
     }
 
+    public void ApplyTheme()
+    {
+        Box.BackColor = Theme.SurfaceContainerHigh;
+        Box.ForeColor = Theme.OnSurface;
+        Invalidate(true);
+    }
+
     void SetCue()
     {
         try { SendMessage(Box.Handle, 0x1501 /* EM_SETCUEBANNER */, (IntPtr)1, "Search programs"); } catch { }
@@ -582,12 +698,12 @@ class AppBar : Control
     public AppBar()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-        BackColor = Theme.Primary;
+        BackColor = Theme.AppBar;
     }
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics; Theme.Hq(g);
-        g.Clear(Theme.Primary);
+        g.Clear(Theme.AppBar);
         int x = Theme.Dp(24);
         if (Logo != null)
         {
@@ -596,9 +712,9 @@ class AppBar : Control
             x += s + Theme.Dp(14);
         }
         int mid = Height / 2;
-        Theme.Text(g, "DPI Override", Theme.Title, new Rectangle(x, mid - Theme.Dp(24), Width - x - Theme.Dp(80), Theme.Dp(28)), Theme.OnPrimary);
+        Theme.Text(g, "DPI Override", Theme.Title, new Rectangle(x, mid - Theme.Dp(24), Width - x - Theme.Dp(80), Theme.Dp(28)), Theme.OnAppBar);
         Theme.Text(g, "High-DPI scaling override for all users", Theme.Subtitle,
-            new Rectangle(x, mid + Theme.Dp(2), Width - x - Theme.Dp(80), Theme.Dp(20)), Theme.InverseOnSurface);
+            new Rectangle(x, mid + Theme.Dp(2), Width - x - Theme.Dp(80), Theme.Dp(20)), Theme.OnAppBarVariant);
     }
 }
 
@@ -672,7 +788,7 @@ class Snackbar : Control
     {
         var g = e.Graphics; Theme.Hq(g);
         g.Clear(Theme.InverseSurface);
-        Color ic = error ? Color.FromArgb(255, 0xF2, 0xB8, 0xB5) : Theme.InversePrimary;
+        Color ic = error ? Theme.SnackError : Theme.InversePrimary;
         Theme.Glyph(g, error ? Theme.GError : Theme.GDone, Theme.Icon, new Rectangle(Theme.Dp(14), 0, Theme.Dp(24), Height), ic);
         int x = Theme.HasIcons ? Theme.Dp(48) : Theme.Dp(16);
         int right = actionRects.Length > 0 ? actionRects[0].Left : Width - Theme.Dp(12);
@@ -701,6 +817,7 @@ class ConfirmDialog : Form
         Font = Theme.Body;
         Text = "DPI Override";
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+        HandleCreated += (s, e) => { Theme.Frame(Handle); Theme.Caption(Handle, Theme.SurfaceContainer, Theme.OnSurface); };
 
         int w = Theme.Dp(440);
         int textW = w - Theme.Dp(48);
@@ -808,11 +925,11 @@ class MainForm : Form
         float scale;
         using (var g = Graphics.FromHwnd(IntPtr.Zero)) scale = g.DpiX / 96f;
         Theme.Init(scale);
+        Theme.SetDark(Theme.SystemDark());
 
         current = this;
         Text = SingleInstance.WindowTitle;   // a second launch finds this window by its title
         Font = Theme.Body;
-        BackColor = Theme.Surface;
         Size = new Size(Dp(1180), Dp(720));
         MinimumSize = new Size(Dp(900), Dp(480));
         StartPosition = FormStartPosition.CenterScreen;
@@ -837,12 +954,12 @@ class MainForm : Form
         appBar.Dock = DockStyle.Top;
         appBar.Height = Dp(72);
         btnRefresh.Glyph = Theme.GRefresh; btnRefresh.Text = "R";
-        btnRefresh.Fore = Theme.OnPrimary;
+        btnRefresh.ForeOf = () => Theme.OnAppBar;
         btnRefresh.Size = new Size(Dp(44), Dp(44));
         btnRefresh.Click += (s, e) => Reload();
         appBar.Controls.Add(btnRefresh);
         btnMore.Glyph = Theme.GMore; btnMore.Text = "…";
-        btnMore.Fore = Theme.OnPrimary;
+        btnMore.ForeOf = () => Theme.OnAppBar;
         btnMore.Size = new Size(Dp(44), Dp(44));
         var undoItem = moreMenu.Add("Undo", Theme.GUndo, () => Undo());
         undoItem.ShortcutKeyDisplayString = "Ctrl+Z";   // display only: OnKeyDown handles the key
@@ -874,7 +991,6 @@ class MainForm : Form
         // Toolbar
         toolbar.Dock = DockStyle.Top;
         toolbar.Height = Dp(68);
-        toolbar.BackColor = Theme.Surface;
         search.Box.TextChanged += (s, e) => FillList();
         chipHide.Text = "Hide Windows processes"; chipHide.Checked = true;
         chipHide.CheckedChanged += (s, e) => FillList();
@@ -895,14 +1011,12 @@ class MainForm : Form
 
         // Content card: header + list
         content.Dock = DockStyle.Fill;
-        content.BackColor = Theme.Surface;
         content.Padding = new Padding(Dp(28), Dp(10), Dp(28), Dp(20));
         content.Paint += PaintCard;
         content.Resize += (s, e) => { content.Invalidate(); PlaceEmpty(); };
 
         header.Dock = DockStyle.Top;
         header.Height = Dp(40);
-        header.BackColor = Theme.Card;
         header.Paint += PaintHeader;
         header.MouseClick += HeaderClick;
         header.Cursor = Cursors.Hand;
@@ -916,7 +1030,7 @@ class MainForm : Form
         list.HideSelection = false;
         list.OwnerDraw = true;
         list.ShowItemToolTips = true;
-        list.BackColor = Theme.Card;
+        list.HandleCreated += (s, e) => Theme.Scrollbars(list.Handle);
         list.SmallImageList = new ImageList { ImageSize = new Size(1, Dp(56)) }; // row height
         for (int i = 0; i < ColNames.Length; i++) list.Columns.Add(ColNames[i], 100);
         list.DrawItem += DrawRow;
@@ -938,8 +1052,6 @@ class MainForm : Form
         rowRemove = rowMenu.Add("Remove override", Theme.GRemove, RemoveOverride);
 
         empty.Text = "No programs match your search or filters";
-        empty.ForeColor = Theme.OnSurfaceVariant;
-        empty.BackColor = Theme.Card;
         empty.Font = Theme.Body;
         empty.AutoSize = true;
         empty.Visible = false;
@@ -952,7 +1064,6 @@ class MainForm : Form
         // Bottom bar
         bottom.Dock = DockStyle.Bottom;
         bottom.Height = Dp(84);
-        bottom.BackColor = Theme.SurfaceContainer;
         bottom.Paint += PaintBottom;
         modes.Items = new[] { "Application", "System", "System (Enhanced)", "Off" };
         modes.Selected = 0;
@@ -973,8 +1084,10 @@ class MainForm : Form
         Controls.Add(appBar);
         Controls.Add(snack);
 
+        ApplyColors();
         LayoutToolbar(); LayoutBottom();
         if (Environment.OSVersion.Platform != PlatformID.Win32NT) { EnableOleDrop(this); EnableOleDrop(list); }
+        Activated += (s, e) => FollowWindowsTheme();   // also catches a switch the window wasn't told about
         Shown += (s, e) =>
         {
             if (Environment.OSVersion.Platform == PlatformID.Win32NT && !Program.Demo) ExplorerMenu.KeepCurrent(Application.ExecutablePath);
@@ -987,19 +1100,50 @@ class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        try
-        {
-            int cap = Theme.Primary.R | (Theme.Primary.G << 8) | (Theme.Primary.B << 16);
-            int txt = 0xFFFFFF;
-            DwmSetWindowAttribute(Handle, 35 /* DWMWA_CAPTION_COLOR */, ref cap, 4);
-            DwmSetWindowAttribute(Handle, 34 /* DWMWA_BORDER_COLOR */, ref cap, 4);
-            DwmSetWindowAttribute(Handle, 36 /* DWMWA_TEXT_COLOR */, ref txt, 4);
-        }
-        catch { }
+        ApplyFrame();
         if (Environment.OSVersion.Platform == PlatformID.Win32NT)
         {
             try { FileDrop.Enable(Handle); } catch (Exception ex) { Program.Log("drop setup failed: " + ex.Message); }
+            MessageFilter.Allow(Handle, WM_SETTINGCHANGE);   // Windows' theme switch, sent by normal-user processes
         }
+    }
+
+    // ---------- Light and dark ----------
+    const int WM_SETTINGCHANGE = 0x001A;
+
+    // The title bar in the app bar's color
+    void ApplyFrame()
+    {
+        Theme.Frame(Handle);
+        Theme.Caption(Handle, Theme.AppBar, Theme.OnAppBar);
+    }
+
+    // Colors that controls keep (the rest is read from Theme when painting)
+    void ApplyColors()
+    {
+        BackColor = Theme.Surface;
+        appBar.BackColor = Theme.AppBar;
+        toolbar.BackColor = Theme.Surface;
+        content.BackColor = Theme.Surface;
+        header.BackColor = Theme.Card;
+        list.BackColor = Theme.Card;
+        empty.ForeColor = Theme.OnSurfaceVariant;
+        empty.BackColor = Theme.Card;
+        bottom.BackColor = Theme.SurfaceContainer;
+        search.ApplyTheme();
+        if (IsHandleCreated) ApplyFrame();
+        if (list.IsHandleCreated) Theme.Scrollbars(list.Handle);
+        Invalidate(true);
+    }
+
+    // Switches between light and dark when Windows' app mode changed
+    void FollowWindowsTheme()
+    {
+        bool dark = Theme.SystemDark();
+        if (dark == Theme.Dark) return;
+        Theme.SetDark(dark);
+        Program.Log("switched to " + (dark ? "dark" : "light") + " mode");
+        ApplyColors();
     }
 
     // WinForms rewrites the window's extended style from CreateParams (e.g. when it's shown), which would drop the
@@ -1024,6 +1168,12 @@ class MainForm : Form
             Activate();
             BeginInvoke(new Action(() => AddPaths(paths)));   // lets Explorer finish the drag before any dialog
             return;
+        }
+        if (m.Msg == WM_SETTINGCHANGE && m.LParam != IntPtr.Zero)
+        {
+            string what = null;
+            try { what = Marshal.PtrToStringUni(m.LParam); } catch { }
+            if (what == "ImmersiveColorSet") BeginInvoke(new Action(FollowWindowsTheme));
         }
         var handed = SingleInstance.Receive(ref m);
         if (handed != null)
@@ -1133,7 +1283,7 @@ class MainForm : Form
         for (int i = 3; i >= 1; i--)
         {
             var sr = new RectangleF(r.X - i * 0.5f, r.Y + i * 0.8f, r.Width + i, r.Height + i * 0.8f);
-            Theme.FillRound(g, Color.FromArgb(10 + (3 - i) * 4, 60, 40, 100), sr, rad + i);
+            Theme.FillRound(g, Color.FromArgb((Theme.Dark ? 30 : 10) + (3 - i) * 4, Theme.Shadow), sr, rad + i);
         }
         Theme.FillRound(g, Theme.Card, r, rad);
         Theme.StrokeRound(g, Theme.Divider, 1f, r, rad);
