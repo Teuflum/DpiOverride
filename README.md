@@ -53,6 +53,8 @@ The output is `bin/DpiOverride.exe`.
 `DpiOverride.exe --selftest` runs the flag-rewriting and folder-grouping unit checks.
 `DpiOverride.exe --demo` shows fake running programs (used to test the UI under Mono on Linux).
 `DpiOverride.exe "<program.exe, shortcut or folder>"` opens with that program, or every program in that folder, added and selected.
+When DPI Override is already open, a second launch hands its paths to that window and brings it to the front instead
+of opening another window (and another UAC prompt).
 
 **Undo:** every change (Apply, Off, Remove override, Restore from backup) can be undone with UNDO in the
 message that follows it, Ctrl+Z, or ⋯ → Undo. It puts back the exact previous values, other compatibility flags

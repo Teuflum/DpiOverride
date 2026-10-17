@@ -412,6 +412,94 @@ static class FileDrop
     }
 }
 
+// A second launch (e.g. from Explorer's "DPI scaling…") hands its paths to the window that's already open instead
+// of opening another one with another UAC prompt. The paths go in a WM_COPYDATA marked with Magic; the open window
+// answers 1, any other window answers 0. The open window lets WM_COPYDATA through the elevation filter (FileDrop.Enable).
+static class SingleInstance
+{
+    const int WM_COPYDATA = 0x004A;
+    static readonly IntPtr Magic = (IntPtr)0x44504F31;   // "DPO1"
+    public const string WindowTitle = "DPI Override";
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct COPYDATASTRUCT { public IntPtr dwData; public int cbData; public IntPtr lpData; }
+
+    delegate bool WindowEnumProc(IntPtr hWnd, IntPtr data);
+    [DllImport("user32.dll")]
+    static extern bool EnumWindows(WindowEnumProc proc, IntPtr data);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    static extern int GetWindowText(IntPtr hWnd, StringBuilder text, int max);
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int pid);
+    [DllImport("user32.dll")]
+    static extern bool AllowSetForegroundWindow(int pid);
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern IntPtr SendMessageTimeout(IntPtr hWnd, int msg, IntPtr wParam, ref COPYDATASTRUCT lParam, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll")]
+    public static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    public static string Pack(IEnumerable<string> paths) { return string.Join("\n", paths); }
+    public static List<string> Unpack(string s) { return s.Split(new[] { '\n' }, StringSplitOptions.RemoveEmptyEntries).ToList(); }
+
+    // Top-level windows titled "DPI Override" that belong to a DpiOverride.exe other than this process
+    static List<KeyValuePair<IntPtr, int>> Candidates()
+    {
+        var found = new List<KeyValuePair<IntPtr, int>>();
+        int self = Process.GetCurrentProcess().Id;
+        string myName = Path.GetFileName(Process.GetCurrentProcess().MainModule.FileName);
+        EnumWindows((w, d) =>
+        {
+            var sb = new StringBuilder(64);
+            int pid;
+            if (GetWindowText(w, sb, sb.Capacity) > 0 && sb.ToString() == WindowTitle && GetWindowThreadProcessId(w, out pid) != 0 && pid != self)
+            {
+                string exe = Procs.PathOf(pid);
+                if (exe != null && string.Equals(Path.GetFileName(exe), myName, StringComparison.OrdinalIgnoreCase))
+                    found.Add(new KeyValuePair<IntPtr, int>(w, pid));
+            }
+            return true;
+        }, IntPtr.Zero);
+        return found;
+    }
+
+    // True when an open window took the paths (an empty list just brings it to the front)
+    public static bool Send(List<string> paths)
+    {
+        try
+        {
+            foreach (var c in Candidates())
+            {
+                AllowSetForegroundWindow(c.Value);   // we were just started by the user, so we may pass that on
+                string text = Pack(paths);
+                IntPtr buf = Marshal.StringToHGlobalUni(text);
+                try
+                {
+                    var cds = new COPYDATASTRUCT { dwData = Magic, cbData = (text.Length + 1) * 2, lpData = buf };
+                    IntPtr result;
+                    if (SendMessageTimeout(c.Key, WM_COPYDATA, IntPtr.Zero, ref cds, 0x0002 /* SMTO_ABORTIFHUNG */, 5000, out result) != IntPtr.Zero
+                        && result == (IntPtr)1)
+                        return true;
+                    Program.Log("window " + c.Key + " (pid " + c.Value + ") didn't take the paths, error " + Marshal.GetLastWin32Error());
+                }
+                finally { Marshal.FreeHGlobal(buf); }
+            }
+        }
+        catch (Exception ex) { Program.Log("handing over to the open window failed: " + ex.Message); }
+        return false;
+    }
+
+    // In the open window's WndProc: the paths from a second launch, or null when the message isn't one
+    public static List<string> Receive(ref System.Windows.Forms.Message m)
+    {
+        if (m.Msg != WM_COPYDATA || m.LParam == IntPtr.Zero) return null;
+        var cds = (COPYDATASTRUCT)Marshal.PtrToStructure(m.LParam, typeof(COPYDATASTRUCT));
+        if (cds.dwData != Magic) return null;
+        string text = cds.cbData >= 2 ? Marshal.PtrToStringUni(cds.lpData, cds.cbData / 2).TrimEnd(new[] { '\0' }) : "";   // not TrimEnd(char): Mono-only overload
+        m.Result = (IntPtr)1;
+        return Unpack(text);
+    }
+}
+
 // Target of a Windows shortcut (.lnk)
 static class Shortcut
 {

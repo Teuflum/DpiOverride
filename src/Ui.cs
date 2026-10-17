@@ -810,7 +810,7 @@ class MainForm : Form
         Theme.Init(scale);
 
         current = this;
-        Text = "DPI Override";
+        Text = SingleInstance.WindowTitle;   // a second launch finds this window by its title
         Font = Theme.Body;
         BackColor = Theme.Surface;
         Size = new Size(Dp(1180), Dp(720));
@@ -1017,6 +1017,19 @@ class MainForm : Form
             Program.Log("dropped " + paths.Count + ": " + string.Join(" | ", paths));
             Activate();
             BeginInvoke(new Action(() => AddPaths(paths)));   // lets Explorer finish the drag before any dialog
+            return;
+        }
+        var handed = SingleInstance.Receive(ref m);
+        if (handed != null)
+        {
+            Program.Log("got " + handed.Count + " path(s) from a second launch" + (handed.Count > 0 ? ": " + string.Join(" | ", handed) : ""));
+            BeginInvoke(new Action(() =>   // after the sender got its answer
+            {
+                if (WindowState == FormWindowState.Minimized) WindowState = FormWindowState.Normal;
+                Activate();
+                SingleInstance.SetForegroundWindow(Handle);
+                if (handed.Count > 0) AddPaths(handed);
+            }));
             return;
         }
         base.WndProc(ref m);
