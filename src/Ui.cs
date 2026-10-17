@@ -555,7 +555,7 @@ class Segmented : MControl
 
     int SegWidth(int i)
     {
-        return Theme.Measure(Items[i], Theme.Label) + Theme.Dp(36) + (Theme.HasIcons ? Theme.Dp(24) : 0);
+        return Theme.Measure(Items[i], Theme.Label) + Theme.Dp(44);
     }
 
     public int PreferredWidth() { int w = 0; for (int i = 0; i < Items.Length; i++) w += SegWidth(i); return w; }
@@ -613,13 +613,9 @@ class Segmented : MControl
         {
             bool sel = i == selected;
             Color fg = sel ? Theme.OnSecondaryContainer : Theme.OnSurface;
-            int tw = Theme.Measure(Items[i], Theme.Label);
-            int gw = sel && Theme.HasIcons ? Theme.Dp(24) : 0;
-            int segW = edges[i + 1] - edges[i];
-            int x = edges[i] + (segW - tw - gw) / 2;
-            if (gw > 0) Theme.Glyph(g, Theme.GCheck, Theme.IconSmall, new Rectangle(x, 0, Theme.Dp(18), Height), fg);
-            TextRenderer.DrawText(g, Items[i], Theme.Label, new Rectangle(x + gw, 0, tw + Theme.Dp(4), Height), fg,
-                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+            // No checkmark: the filled segment shows the choice, and the labels stay put when it changes
+            TextRenderer.DrawText(g, Items[i], Theme.Label, new Rectangle(edges[i], 0, edges[i + 1] - edges[i], Height), fg,
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
         }
     }
 }
