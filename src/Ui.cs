@@ -113,7 +113,7 @@ static class Theme
                         GMore = "\uE712", GSave = "\uE74E", GOpenFile = "\uE8E5", GUndo = "\uE7A7",
                         GPeople = "\uE716", GPerson = "\uE77B", GShield = "\uEA18";
 
-    public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall, MenuIcon;
+    public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall, MenuIcon, CaptionIcon;
     public static bool HasIcons;
 
     // Icon glyphs (Segoe Fluent Icons / Segoe MDL2 Assets)
@@ -141,6 +141,7 @@ static class Theme
         Icon = new Font(icons ?? ui, 12f);
         IconSmall = new Font(icons ?? ui, 9f);
         MenuIcon = new Font(icons ?? ui, 13f);   // about 18 dp of glyph in the 24 dp icon box
+        CaptionIcon = new Font(icons ?? ui, 7.5f);   // Windows' 10 px caption glyphs
     }
 
     public static GraphicsPath Round(RectangleF r, float rad)
@@ -728,14 +729,45 @@ class SearchBox : Control
     }
 }
 
+// The app's top bar, which on Windows is also the window's title bar (MainForm extends its content into the title
+// bar area): logo and title, the app's actions (child controls) and Material window buttons at the top right. Mouse
+// hits on it go to the window (HTTRANSPARENT), which tells Windows what's there: the buttons, or a place to drag.
 class AppBar : Control
 {
     public Image Logo;
+    public bool WindowButtons;           // drawn here because the window has no title bar of its own
+    public bool Maximized, Active = true;
+    public int Hot, Pressed;             // hit-test code of the window button under the mouse / held down, or 0
+    public const int HTMINBUTTON = 8, HTMAXBUTTON = 9, HTCLOSE = 20;
+
     public AppBar()
     {
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         BackColor = Theme.AppBar;
     }
+
+    // Windows' caption button size
+    public int ButtonsWidth { get { return WindowButtons ? 3 * Theme.Dp(46) : 0; } }
+
+    public Rectangle ButtonRect(int ht)
+    {
+        int w = Theme.Dp(46), i = ht == HTCLOSE ? 0 : ht == HTMAXBUTTON ? 1 : 2;
+        return new Rectangle(Width - (i + 1) * w, 0, w, Theme.Dp(32));
+    }
+
+    public int ButtonAt(Point p)
+    {
+        if (!WindowButtons) return 0;
+        foreach (int ht in new[] { HTCLOSE, HTMAXBUTTON, HTMINBUTTON }) if (ButtonRect(ht).Contains(p)) return ht;
+        return 0;
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        if (m.Msg == 0x0084 /* WM_NCHITTEST */ && WindowButtons) { m.Result = (IntPtr)(-1) /* HTTRANSPARENT */; return; }
+        base.WndProc(ref m);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics; Theme.Hq(g);
@@ -747,10 +779,40 @@ class AppBar : Control
             g.DrawImage(Logo, new Rectangle(x, (Height - s) / 2, s, s));
             x += s + Theme.Dp(14);
         }
-        int mid = Height / 2;
-        Theme.Text(g, "DPI Override", Theme.Title, new Rectangle(x, mid - Theme.Dp(24), Width - x - Theme.Dp(80), Theme.Dp(28)), Theme.OnAppBar);
+        int mid = Height / 2, tw = Width - x - Theme.Dp(120) - ButtonsWidth;
+        Theme.Text(g, "DPI Override", Theme.Title, new Rectangle(x, mid - Theme.Dp(24), tw, Theme.Dp(28)), Theme.OnAppBar);
         Theme.Text(g, "High-DPI scaling override for any program", Theme.Subtitle,
-            new Rectangle(x, mid + Theme.Dp(2), Width - x - Theme.Dp(80), Theme.Dp(20)), Theme.OnAppBarVariant);
+            new Rectangle(x, mid + Theme.Dp(2), tw, Theme.Dp(20)), Theme.OnAppBarVariant);
+        if (WindowButtons) foreach (int ht in new[] { HTMINBUTTON, HTMAXBUTTON, HTCLOSE }) DrawButton(g, ht);
+    }
+
+    // Material state layers on the bar's color; close turns red like everywhere in Windows
+    void DrawButton(Graphics g, int ht)
+    {
+        var r = ButtonRect(ht);
+        bool hot = Hot == ht, pressed = Pressed == ht && hot;
+        Color fg = Active ? Theme.OnAppBar : Theme.Mix(Theme.AppBar, Theme.OnAppBar, 0.55f);
+        if (ht == HTCLOSE && (hot || pressed))
+        {
+            using (var b = new SolidBrush(pressed ? Color.FromArgb(255, 0xA3, 0x24, 0x18) : Color.FromArgb(255, 0xC4, 0x2B, 0x1C))) g.FillRectangle(b, r);
+            fg = Color.White;
+        }
+        else if (hot || pressed) using (var b = new SolidBrush(Theme.Alpha(Theme.OnAppBar, pressed ? 0.18f : 0.10f))) g.FillRectangle(b, r);
+        if (Theme.HasIcons)
+        {
+            string glyph = ht == HTCLOSE ? "" : ht == HTMINBUTTON ? "" : Maximized ? "" : "";
+            Theme.Glyph(g, glyph, Theme.CaptionIcon, r, fg);
+        }
+        else
+        {
+            int s = Theme.Dp(5), cx = r.X + r.Width / 2, cy = r.Y + r.Height / 2;
+            using (var pen = new Pen(fg, Math.Max(1f, Theme.S)))
+            {
+                if (ht == HTMINBUTTON) g.DrawLine(pen, cx - s, cy, cx + s, cy);
+                else if (ht == HTMAXBUTTON) g.DrawRectangle(pen, cx - s, cy - s, 2 * s, 2 * s);
+                else { g.DrawLine(pen, cx - s, cy - s, cx + s, cy + s); g.DrawLine(pen, cx - s, cy + s, cx + s, cy - s); }
+            }
+        }
     }
 }
 
@@ -1028,6 +1090,10 @@ class MainForm : Form
         // App bar
         appBar.Dock = DockStyle.Top;
         appBar.Height = Dp(72);
+        appBar.WindowButtons = CustomTitleBar;
+        Activated += (s, e) => { appBar.Active = true; appBar.Invalidate(); };
+        Deactivate += (s, e) => { appBar.Active = false; appBar.Invalidate(); };
+        SizeChanged += (s, e) => { appBar.Maximized = WindowState == FormWindowState.Maximized; appBar.Invalidate(); };
         btnRefresh.Glyph = Theme.GRefresh; btnRefresh.Text = "R";
         btnRefresh.ForeOf = () => Theme.OnAppBar;
         btnRefresh.Size = new Size(Dp(44), Dp(44));
@@ -1059,7 +1125,7 @@ class MainForm : Form
         appBar.Controls.Add(btnMore);
         appBar.Resize += (s, e) =>
         {
-            btnMore.Location = new Point(appBar.Width - btnMore.Width - Dp(16), (appBar.Height - btnMore.Height) / 2);
+            btnMore.Location = new Point(appBar.Width - appBar.ButtonsWidth - btnMore.Width - Dp(16), (appBar.Height - btnMore.Height) / 2);
             btnRefresh.Location = new Point(btnMore.Left - btnRefresh.Width - Dp(4), btnMore.Top);
         };
         new ToolTip().SetToolTip(btnRefresh, "Refresh (F5)");
@@ -1183,6 +1249,8 @@ class MainForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        // recalculate the frame now that WM_NCCALCSIZE gives the title bar area to the app bar
+        if (CustomTitleBar) SetWindowPos(Handle, IntPtr.Zero, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0004 | 0x0020 /* NOSIZE NOMOVE NOZORDER FRAMECHANGED */);
         ApplyFrame();
         if (Environment.OSVersion.Platform == PlatformID.Win32NT)
         {
@@ -1241,9 +1309,114 @@ class MainForm : Form
         }
     }
 
+    // ---------- The app bar as the title bar ----------
+    // The window keeps its normal frame (resize edges, shadow, rounded corners, snapping), but the title bar area belongs
+    // to the client: WM_NCCALCSIZE gives it back, and WM_NCHITTEST tells Windows where the window buttons, the place to
+    // drag and the top resize edge are. Returning HTMAXBUTTON also brings Windows 11's Snap Layouts to our button.
+    static bool CustomTitleBar { get { return Environment.OSVersion.Platform == PlatformID.Win32NT; } }
+
+    const int WM_NCCALCSIZE = 0x0083, WM_NCHITTEST = 0x0084, WM_NCMOUSEMOVE = 0x00A0, WM_NCLBUTTONDOWN = 0x00A1,
+              WM_NCLBUTTONUP = 0x00A2, WM_NCLBUTTONDBLCLK = 0x00A3, WM_NCMOUSELEAVE = 0x02A2;
+    const int HTCLIENT = 1, HTCAPTION = 2, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14;
+
+    [DllImport("user32.dll")]
+    static extern bool SetWindowPos(IntPtr hWnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
+    [DllImport("user32.dll")]
+    static extern int GetSystemMetrics(int index);
+    [DllImport("user32.dll")]
+    static extern bool IsZoomed(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    static extern bool TrackMouseEvent(ref TRACKMOUSEEVENT e);
+    [StructLayout(LayoutKind.Sequential)]
+    struct TRACKMOUSEEVENT { public int cbSize; public uint dwFlags; public IntPtr hwndTrack; public uint dwHoverTime; }
+
+    bool trackingNcLeave;
+
+    // Height of the invisible resize border; also how far a maximized window reaches past the screen edge
+    static int FrameY { get { return GetSystemMetrics(33 /* SM_CYFRAME */) + GetSystemMetrics(92 /* SM_CXPADDEDBORDER */); } }
+
+    static bool IsWindowButton(int ht) { return ht == AppBar.HTMINBUTTON || ht == AppBar.HTMAXBUTTON || ht == AppBar.HTCLOSE; }
+
+    void SetHotButton(int ht)
+    {
+        if (appBar.Hot == ht) return;
+        appBar.Hot = ht;
+        appBar.Invalidate();
+    }
+
+    // True when the message was handled here
+    bool TitleBarMessage(ref Message m)
+    {
+        switch (m.Msg)
+        {
+            case WM_NCCALCSIZE:
+                if (m.WParam == IntPtr.Zero) return false;
+                int top = Marshal.ReadInt32(m.LParam, 4);   // NCCALCSIZE_PARAMS.rgrc[0].top
+                base.WndProc(ref m);
+                // no title bar; a maximized window sticks out past the screen by its frame, so start below that
+                Marshal.WriteInt32(m.LParam, 4, top + (IsZoomed(Handle) ? FrameY : 0));
+                m.Result = IntPtr.Zero;
+                return true;
+
+            case WM_NCHITTEST:
+                base.WndProc(ref m);
+                if (m.Result.ToInt64() != HTCLIENT) return true;   // the side and bottom resize edges
+                long lp = m.LParam.ToInt64();
+                var p = PointToClient(new Point((short)(lp & 0xFFFF), (short)((lp >> 16) & 0xFFFF)));
+                int frame = FrameY;
+                if (!IsZoomed(Handle) && p.Y < frame)
+                    m.Result = (IntPtr)(p.X < frame * 2 ? HTTOPLEFT : p.X >= ClientSize.Width - frame * 2 ? HTTOPRIGHT : HTTOP);
+                else if (appBar.Bounds.Contains(p))
+                {
+                    int button = appBar.ButtonAt(new Point(p.X - appBar.Left, p.Y - appBar.Top));
+                    m.Result = (IntPtr)(button != 0 ? button : HTCAPTION);
+                }
+                return true;
+
+            case WM_NCMOUSEMOVE:
+                SetHotButton(IsWindowButton(m.WParam.ToInt32()) ? m.WParam.ToInt32() : 0);
+                if (!trackingNcLeave)
+                {
+                    var t = new TRACKMOUSEEVENT { cbSize = Marshal.SizeOf(typeof(TRACKMOUSEEVENT)), dwFlags = 0x02 | 0x10 /* TME_LEAVE | TME_NONCLIENT */, hwndTrack = Handle };
+                    trackingNcLeave = TrackMouseEvent(ref t);
+                }
+                return false;
+
+            case WM_NCMOUSELEAVE:
+                trackingNcLeave = false;
+                SetHotButton(0);
+                if (appBar.Pressed != 0) { appBar.Pressed = 0; appBar.Invalidate(); }
+                return false;
+
+            case WM_NCLBUTTONDOWN:
+            case WM_NCLBUTTONDBLCLK:
+                if (!IsWindowButton(m.WParam.ToInt32())) return false;   // the caption: Windows drags or maximizes
+                appBar.Pressed = m.WParam.ToInt32();   // drawn here; Windows would draw its old buttons
+                appBar.Invalidate();
+                m.Result = IntPtr.Zero;
+                return true;
+
+            case WM_NCLBUTTONUP:
+                int pressed = appBar.Pressed;
+                if (pressed == 0) return false;
+                appBar.Pressed = 0;
+                appBar.Invalidate();
+                if (m.WParam.ToInt32() == pressed)
+                {
+                    if (pressed == AppBar.HTCLOSE) Close();
+                    else if (pressed == AppBar.HTMINBUTTON) WindowState = FormWindowState.Minimized;
+                    else WindowState = WindowState == FormWindowState.Maximized ? FormWindowState.Normal : FormWindowState.Maximized;
+                }
+                m.Result = IntPtr.Zero;
+                return true;
+        }
+        return false;
+    }
+
     // Programs, shortcuts and folders dropped onto the window (Windows: WM_DROPFILES, see FileDrop)
     protected override void WndProc(ref Message m)
     {
+        if (CustomTitleBar && TitleBarMessage(ref m)) return;
         if (m.Msg == FileDrop.WM_DROPFILES)
         {
             var paths = FileDrop.Paths(m.WParam);
