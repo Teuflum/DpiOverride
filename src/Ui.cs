@@ -40,7 +40,7 @@ static class Theme
     public static readonly Color Error = C(0xB3261E);
     public static readonly Color Running = C(0x2E7D32);
 
-    public const string GFile = "\uE8A5", GFolder = "\uE8B7";
+    public const string GFile = "\uE8A5", GFolder = "\uE8B7", GOpenFolder = "\uE838", GCopy = "\uE8C8", GRemove = "\uE711";
 
     public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall;
     public static bool HasIcons;
@@ -124,16 +124,31 @@ static class Theme
     public static Bitmap GlyphImage(string glyph, Color c)
     {
         if (!HasIcons) return null;
-        int s = Dp(20);
-        var b = new Bitmap(s, s);
-        using (var g = Graphics.FromImage(b))
+        int s = Dp(20), big = s * 2;
+        // Drawn on a larger canvas first, then the visible pixels are centered: the icon font's line box
+        // doesn't sit centered on the glyph, which put menu icons a few pixels above their text
+        using (var tmp = new Bitmap(big, big))
         {
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            using (var br = new SolidBrush(c))
-            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                g.DrawString(glyph, IconSmall, br, new RectangleF(0, 0, s, s), sf);
+            using (var g = Graphics.FromImage(tmp))
+            {
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                using (var br = new SolidBrush(c))
+                using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                    g.DrawString(glyph, IconSmall, br, new RectangleF(0, 0, big, big), sf);
+            }
+            int x0 = big, y0 = big, x1 = -1, y1 = -1;
+            for (int y = 0; y < big; y++)
+                for (int x = 0; x < big; x++)
+                    if (tmp.GetPixel(x, y).A > 24) { x0 = Math.Min(x0, x); x1 = Math.Max(x1, x); y0 = Math.Min(y0, y); y1 = Math.Max(y1, y); }
+            var b = new Bitmap(s, s);
+            if (x1 < 0) return b;
+            using (var g = Graphics.FromImage(b))
+            {
+                var src = new Rectangle(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+                g.DrawImage(tmp, new Rectangle((s - src.Width) / 2, (s - src.Height) / 2, src.Width, src.Height), src, GraphicsUnit.Pixel);
+            }
+            return b;
         }
-        return b;
     }
 
     const TextFormatFlags Base = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter;
@@ -325,6 +340,18 @@ class MMenu : ContextMenuStrip
         }
 
         protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
+
+        // Centered in the item, like the text (the default places it by the item's padding). One dp lower, because
+        // Segoe UI's capitals sit about 0.06 em below the center of the line box the text is centered by.
+        protected override void OnRenderItemImage(ToolStripItemImageRenderEventArgs e)
+        {
+            var img = e.Image;
+            if (img == null) return;
+            var r = e.ImageRectangle;
+            var dst = new Rectangle(r.X + (r.Width - img.Width) / 2, (e.Item.Height - img.Height) / 2 + Theme.Dp(1), img.Width, img.Height);
+            if (e.Item.Enabled) e.Graphics.DrawImage(img, dst);
+            else ControlPaint.DrawImageDisabled(e.Graphics, img, dst.X, dst.Y, Theme.SurfaceContainer);
+        }
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
@@ -729,6 +756,8 @@ class MainForm : Form
     ToolStripMenuItem addHere;
     ToolStripSeparator addHereSep;
     string addHereDir;
+    readonly MMenu rowMenu = new MMenu();
+    ToolStripMenuItem rowOpen, rowCopy, rowRestart, rowRemove;
     readonly Dictionary<string, string> descCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, Bitmap> iconCache = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
     readonly string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd(new[] { '\\' }) + "\\";
@@ -849,7 +878,13 @@ class MainForm : Form
         list.SelectedIndexChanged += (s, e) => { UpdateSelectionUi(); list.Invalidate(); };
         list.MouseDown += ListMouseDown;
         list.MouseDoubleClick += ListDoubleClick;
+        list.MouseClick += (s, e) => { if (e.Button == MouseButtons.Right && list.GetItemAt(e.X, e.Y) != null) ShowRowMenu(e.Location); };
         list.KeyDown += ListKeyDown;
+        rowOpen = rowMenu.Add("Open file location", Theme.GOpenFolder, OpenLocation);
+        rowCopy = rowMenu.Add("Copy path", Theme.GCopy, CopyPaths);
+        rowMenu.AddSeparator();
+        rowRestart = rowMenu.Add("Restart", Theme.GRefresh, RestartSelected);
+        rowRemove = rowMenu.Add("Remove override", Theme.GRemove, RemoveOverride);
 
         empty.Text = "No programs match your search or filters";
         empty.ForeColor = Theme.OnSurfaceVariant;
@@ -1285,6 +1320,14 @@ class MainForm : Form
             e.Handled = true;
             return;
         }
+        if (e.KeyCode == Keys.Apps || (e.Shift && e.KeyCode == Keys.F10))
+        {
+            var at = list.FocusedItem != null && list.FocusedItem.Selected ? list.FocusedItem
+                   : list.SelectedItems.Count > 0 ? list.SelectedItems[0] : null;
+            if (at != null) { at.EnsureVisible(); ShowRowMenu(new Point(at.Bounds.X + Dp(Gutter + 48), at.Bounds.Bottom - Dp(8))); }
+            e.Handled = true; e.SuppressKeyPress = true;
+            return;
+        }
         var focused = list.FocusedItem;
         if (focused == null) return;
         var row = (Row)focused.Tag;
@@ -1711,6 +1754,64 @@ class MainForm : Form
         worker.Start();
     }
 
+    // ---------- Right-click menu on rows ----------
+    List<Row> SelectedRows() { return list.SelectedItems.Cast<ListViewItem>().Select(i => (Row)i.Tag).ToList(); }
+
+    // A group row stands for its folder, a program row for its .exe
+    static string PathOf(Row r) { return r.IsGroup ? r.Group.Root : r.Entry.Path; }
+
+    void ShowRowMenu(Point at)
+    {
+        var rows = SelectedRows();
+        if (rows.Count == 0) return;
+        var sel = SelectedEntries();
+        string single = rows.Count == 1 ? PathOf(rows[0]) : null;
+        rowOpen.Enabled = single != null && (rows[0].IsGroup ? Directory.Exists(single)
+                                                              : File.Exists(single) || Directory.Exists(Grouping.FolderOf(single)));
+        rowCopy.Text = rows.Count == 1 ? "Copy path" : "Copy paths";
+        rowRestart.Enabled = !restarting && sel.Any(e => e.Running);
+        rowRemove.Enabled = sel.Any(HasOverride);
+        rowMenu.Show(list, at);
+    }
+
+    static bool HasOverride(Entry e) { return e.AllUsers != "Not set" || e.CurrentUser != "Not set"; }
+
+    void OpenLocation()
+    {
+        var rows = SelectedRows();
+        if (rows.Count != 1) return;
+        string p = PathOf(rows[0]);
+        try
+        {
+            // Explorer hands this to the running (non-elevated) desktop Explorer
+            if (!rows[0].IsGroup && File.Exists(p)) Process.Start("explorer.exe", "/select,\"" + p + "\"");
+            else Process.Start("explorer.exe", "\"" + (rows[0].IsGroup ? p : Grouping.FolderOf(p)) + "\"");
+        }
+        catch (Exception ex)
+        {
+            Program.Log("open location failed for " + p + ": " + ex.Message);
+            ShowSnack("Couldn't open the folder: " + ex.Message, true);
+        }
+    }
+
+    void CopyPaths()
+    {
+        var paths = SelectedRows().Select(PathOf).ToList();
+        if (paths.Count == 0) return;
+        try
+        {
+            Clipboard.SetText(string.Join(Environment.NewLine, paths));
+            ShowSnack(paths.Count == 1 ? "Path copied" : paths.Count + " paths copied", false);
+        }
+        catch (Exception ex) { ShowSnack("Couldn't copy: " + ex.Message, true); }
+    }
+
+    void RemoveOverride()
+    {
+        var items = SelectedEntries().Where(HasOverride).ToList();
+        if (items.Count > 0) Apply("Not set", items);
+    }
+
     // ---------- Demo data (for testing the UI under Mono on Linux: --demo) ----------
     static Dictionary<string, List<int>> DemoRunning()
     {
@@ -1739,11 +1840,11 @@ class MainForm : Form
         snack.Show(text, error, area, actionLabel, onAction);
     }
 
-    void Apply()
+    void Apply() { Apply(ModeKeys[modes.Selected], SelectedEntries()); }
+
+    void Apply(string mode, List<Entry> items)
     {
-        var items = SelectedEntries();
         if (items.Count == 0) return;
-        string mode = ModeKeys[modes.Selected];
         string groupName = SelectedGroupName();
 
         var errors = new List<string>();
@@ -1774,7 +1875,7 @@ class MainForm : Form
         else if (done.Count > 0)
         {
             string what = done.Count == 1 ? done[0] : groupName != null ? groupName + " (" + done.Count + " programs)" : done.Count + " programs";
-            string m = mode == "Not set" ? "Override removed for " + what : modes.Items[modes.Selected] + " scaling set for " + what;
+            string m = mode == "Not set" ? "Override removed for " + what : modes.Items[Array.IndexOf(ModeKeys, mode)] + " scaling set for " + what;
             var runningApplied = entries.Where(en => paths.Contains(en.Path, StringComparer.OrdinalIgnoreCase) && en.Running).ToList();
             if (runningApplied.Count > 0)
                 ShowSnack(m + ". Restart to apply.", false, "RESTART", () => RestartEntries(runningApplied, groupName));
