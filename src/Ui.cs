@@ -268,11 +268,24 @@ class MMenu : ContextMenuStrip
     public MMenu()
     {
         Renderer = new MenuRenderer();
+        Style();
+    }
+
+    // Menus are often created as fields, before Theme.Init knows the display scale, so the style is applied again
+    // every time the menu opens
+    void Style()
+    {
         Font = Theme.Body;
         BackColor = Theme.SurfaceContainer;
         ShowImageMargin = Theme.HasIcons;
         ImageScalingSize = new Size(Theme.Dp(20), Theme.Dp(20));
         Padding = new Padding(0, Theme.Dp(6), 0, Theme.Dp(6));
+    }
+
+    protected override void OnOpening(System.ComponentModel.CancelEventArgs e)
+    {
+        Style();
+        base.OnOpening(e);
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -321,10 +334,13 @@ class MMenu : ContextMenuStrip
             Theme.FillRound(g, Theme.Alpha(Theme.OnSurface, 0.08f), r, Theme.Dp(6));
         }
 
+        // Drawn here because the default text rectangle sits above the icon when the item has vertical padding
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
-            e.TextColor = e.Item.Enabled ? Theme.OnSurface : Theme.Mix(Theme.SurfaceContainer, Theme.OnSurface, 0.38f);
-            base.OnRenderItemText(e);
+            var color = e.Item.Enabled ? Theme.OnSurface : Theme.Mix(Theme.SurfaceContainer, Theme.OnSurface, 0.38f);
+            var r = new Rectangle(e.TextRectangle.X, 0, e.Item.Width - e.TextRectangle.X, e.Item.Height);
+            TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, r, color,
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
