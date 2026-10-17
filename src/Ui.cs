@@ -779,7 +779,7 @@ class AppBar : Control
             g.DrawImage(Logo, new Rectangle(x, (Height - s) / 2, s, s));
             x += s + Theme.Dp(14);
         }
-        int mid = Height / 2, tw = Width - x - Theme.Dp(120) - ButtonsWidth;
+        int mid = Height / 2, tw = Width - x - Theme.Dp(24) - ButtonsWidth;
         Theme.Text(g, "DPI Override", Theme.Title, new Rectangle(x, mid - Theme.Dp(24), tw, Theme.Dp(28)), Theme.OnAppBar);
         Theme.Text(g, "High-DPI scaling override for any program", Theme.Subtitle,
             new Rectangle(x, mid + Theme.Dp(2), tw, Theme.Dp(20)), Theme.OnAppBarVariant);
@@ -1089,19 +1089,14 @@ class MainForm : Form
 
         // App bar
         appBar.Dock = DockStyle.Top;
-        appBar.Height = Dp(72);
+        appBar.Height = Dp(64);   // Material's top app bar; the app's commands are in the toolbar below
         appBar.WindowButtons = CustomTitleBar;
         Activated += (s, e) => { appBar.Active = true; appBar.Invalidate(); };
         Deactivate += (s, e) => { appBar.Active = false; appBar.Invalidate(); };
         SizeChanged += (s, e) => { appBar.Maximized = WindowState == FormWindowState.Maximized; appBar.Invalidate(); };
         btnRefresh.Glyph = Theme.GRefresh; btnRefresh.Text = "R";
-        btnRefresh.ForeOf = () => Theme.OnAppBar;
-        btnRefresh.Size = new Size(Dp(44), Dp(44));
         btnRefresh.Click += (s, e) => Reload();
-        appBar.Controls.Add(btnRefresh);
         btnMore.Glyph = Theme.GMore; btnMore.Text = "…";
-        btnMore.ForeOf = () => Theme.OnAppBar;
-        btnMore.Size = new Size(Dp(44), Dp(44));
         var undoItem = moreMenu.Add("Undo", Theme.GUndo, () => Undo());
         undoItem.ShortcutKeyDisplayString = "Ctrl+Z";   // display only: OnKeyDown handles the key
         undoItem.ShowShortcutKeys = true;
@@ -1122,14 +1117,8 @@ class MainForm : Form
                                              : ExplorerEntryOn() ? "Remove " + label + " from Explorer" : "Add " + label + " to Explorer";
             moreMenu.Show(btnMore, new Point(btnMore.Width, btnMore.Height + Dp(4)), ToolStripDropDownDirection.BelowLeft);
         };
-        appBar.Controls.Add(btnMore);
-        appBar.Resize += (s, e) =>
-        {
-            btnMore.Location = new Point(appBar.Width - appBar.ButtonsWidth - btnMore.Width - Dp(16), (appBar.Height - btnMore.Height) / 2);
-            btnRefresh.Location = new Point(btnMore.Left - btnRefresh.Width - Dp(4), btnMore.Top);
-        };
         new ToolTip().SetToolTip(btnRefresh, "Refresh (F5)");
-        new ToolTip().SetToolTip(btnMore, "Back up and restore");
+        new ToolTip().SetToolTip(btnMore, "Undo, back up and restore, Explorer menu");
 
         // Toolbar
         toolbar.Dock = DockStyle.Top;
@@ -1148,7 +1137,7 @@ class MainForm : Form
         addHereSep = addMenu.AddSeparator();
         addHere = addMenu.Add("", Theme.GFolder, () => AddPaths(new[] { addHereDir }));
         new ToolTip().SetToolTip(btnAdd, "Add a program that isn't running, or every program in a folder. You can also drop programs, shortcuts and folders onto the window.");
-        toolbar.Controls.AddRange(new Control[] { search, chipHide, chipOverride, chipBlurry, btnAdd });
+        toolbar.Controls.AddRange(new Control[] { search, chipHide, chipOverride, chipBlurry, btnRefresh, btnAdd, btnMore });
         toolbar.Resize += (s, e) => LayoutToolbar();
         toolbar.Paint += PaintToolbar;
 
@@ -1316,7 +1305,32 @@ class MainForm : Form
     static bool CustomTitleBar { get { return Environment.OSVersion.Platform == PlatformID.Win32NT; } }
 
     const int WM_NCCALCSIZE = 0x0083, WM_NCHITTEST = 0x0084, WM_NCMOUSEMOVE = 0x00A0, WM_NCLBUTTONDOWN = 0x00A1,
-              WM_NCLBUTTONUP = 0x00A2, WM_NCLBUTTONDBLCLK = 0x00A3, WM_NCMOUSELEAVE = 0x02A2;
+              WM_NCLBUTTONUP = 0x00A2, WM_NCLBUTTONDBLCLK = 0x00A3, WM_NCRBUTTONUP = 0x00A5, WM_NCMOUSELEAVE = 0x02A2;
+
+    [DllImport("user32.dll")]
+    static extern IntPtr GetSystemMenu(IntPtr hWnd, bool revert);
+    [DllImport("user32.dll")]
+    static extern bool EnableMenuItem(IntPtr menu, uint id, uint flags);
+    [DllImport("user32.dll")]
+    static extern int TrackPopupMenu(IntPtr menu, uint flags, int x, int y, int reserved, IntPtr hWnd, IntPtr rect);
+    [DllImport("user32.dll")]
+    static extern bool PostMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
+    // Windows' window menu (Restore, Move, Size, Minimize, Maximize, Close), with the items that apply now
+    void ShowSystemMenu(Point screen)
+    {
+        IntPtr menu = GetSystemMenu(Handle, false);
+        if (menu == IntPtr.Zero) return;
+        bool max = IsZoomed(Handle);
+        const uint ENABLED = 0, GRAYED = 1;
+        EnableMenuItem(menu, 0xF120 /* SC_RESTORE */, max ? ENABLED : GRAYED);
+        EnableMenuItem(menu, 0xF010 /* SC_MOVE */, max ? GRAYED : ENABLED);
+        EnableMenuItem(menu, 0xF000 /* SC_SIZE */, max ? GRAYED : ENABLED);
+        EnableMenuItem(menu, 0xF020 /* SC_MINIMIZE */, ENABLED);
+        EnableMenuItem(menu, 0xF030 /* SC_MAXIMIZE */, max ? GRAYED : ENABLED);
+        int cmd = TrackPopupMenu(menu, 0x0100 /* TPM_RETURNCMD */ | 0x0002 /* TPM_RIGHTBUTTON */, screen.X, screen.Y, 0, Handle, IntPtr.Zero);
+        if (cmd != 0) PostMessage(Handle, 0x0112 /* WM_SYSCOMMAND */, (IntPtr)cmd, IntPtr.Zero);
+    }
     const int HTCLIENT = 1, HTCAPTION = 2, HTTOP = 12, HTTOPLEFT = 13, HTTOPRIGHT = 14;
 
     [DllImport("user32.dll")]
@@ -1396,6 +1410,14 @@ class MainForm : Form
                 m.Result = IntPtr.Zero;
                 return true;
 
+            case WM_NCRBUTTONUP:
+                // Windows places its window menu by its own title bar, which isn't there any more: open it here
+                if (m.WParam.ToInt32() != HTCAPTION) return false;
+                long rp = m.LParam.ToInt64();
+                ShowSystemMenu(new Point((short)(rp & 0xFFFF), (short)((rp >> 16) & 0xFFFF)));
+                m.Result = IntPtr.Zero;
+                return true;
+
             case WM_NCLBUTTONUP:
                 int pressed = appBar.Pressed;
                 if (pressed == 0) return false;
@@ -1472,10 +1494,15 @@ class MainForm : Form
     {
         int h = Dp(40), y = (toolbar.Height - h) / 2 + Dp(2);
         int x = Dp(28);
+        // right side: refresh, Add, and the overflow menu last
+        btnMore.Bounds = new Rectangle(toolbar.Width - Dp(24) - h, y, h, h);
         int addW = btnAdd.PreferredWidth();
-        btnAdd.Bounds = new Rectangle(toolbar.Width - Dp(28) - addW, y, addW, h);
+        btnAdd.Bounds = new Rectangle(btnMore.Left - Dp(8) - addW, y, addW, h);
+        btnRefresh.Bounds = new Rectangle(btnAdd.Left - Dp(8) - h, y, h, h);
+        int rightW = toolbar.Width - btnRefresh.Left;
         int chipsW = chipHide.PreferredWidth() + chipOverride.PreferredWidth() + chipBlurry.PreferredWidth() + Dp(16) + Dp(16);
-        int searchW = Math.Max(Dp(180), Math.Min(Dp(340), toolbar.Width - Dp(28) * 2 - addW - chipsW - Dp(110)));
+        int countW = Theme.Measure("9999 programs", Theme.Small) + Dp(8 + 12 + 16);   // room for the count between the chips and refresh
+        int searchW = Math.Max(Dp(180), Math.Min(Dp(340), toolbar.Width - Dp(28) - rightW - chipsW - countW));
         search.Bounds = new Rectangle(x, y, searchW, h);
         x += searchW + Dp(16);
         int ch = Dp(32), cy = y + (h - ch) / 2;
@@ -1552,7 +1579,7 @@ class MainForm : Form
         var g = e.Graphics;
         string count = shownCount == 1 ? "1 program" : shownCount + " programs";
         int w = Theme.Measure(count, Theme.Small) + Dp(8);
-        int right = btnAdd.Left - Dp(16);
+        int right = btnRefresh.Left - Dp(12);
         int left = chipBlurry.Right + Dp(16);
         if (right - w > left)
             Theme.Text(g, count, Theme.Small, new Rectangle(right - w, btnAdd.Top, w, btnAdd.Height), Theme.OnSurfaceVariant, TextFormatFlags.Right);
