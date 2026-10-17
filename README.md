@@ -54,6 +54,11 @@ The output is `bin/DpiOverride.exe`.
 `DpiOverride.exe --demo` shows fake running programs (used to test the UI under Mono on Linux).
 `DpiOverride.exe "<program.exe, shortcut or folder>"` opens with that program, or every program in that folder, added and selected.
 
+**Back up and restore** (⋯ menu in the title bar): *Back up overrides…* saves every DPI override (all users and
+current user) as a `.reg` file, which can also be restored by double-clicking it. *Restore from backup…* reads only the
+DPI override keys from such a file and sets each program's DPI mode as in the backup; other compatibility flags,
+and programs that aren't in the backup, stay as they are.
+
 Programs, shortcuts (.lnk) and folders can also be dropped onto the window. A shortcut to a Squirrel launcher
 (Discord, Slack, …) adds the real program from the newest `app-<version>` folder. Because the tool runs as
 administrator, it accepts drops through `WM_DROPFILES` (Windows blocks normal drag and drop from Explorer into

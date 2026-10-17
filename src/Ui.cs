@@ -40,7 +40,8 @@ static class Theme
     public static readonly Color Error = C(0xB3261E);
     public static readonly Color Running = C(0x2E7D32);
 
-    public const string GFile = "\uE8A5", GFolder = "\uE8B7", GOpenFolder = "\uE838", GCopy = "\uE8C8", GRemove = "\uE711";
+    public const string GFile = "\uE8A5", GFolder = "\uE8B7", GOpenFolder = "\uE838", GCopy = "\uE8C8", GRemove = "\uE711",
+                        GMore = "\uE712", GSave = "\uE74E", GOpenFile = "\uE8E5";
 
     public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall;
     public static bool HasIcons;
@@ -733,6 +734,8 @@ class MainForm : Form
 {
     readonly AppBar appBar = new AppBar();
     readonly IconButton btnRefresh = new IconButton();
+    readonly IconButton btnMore = new IconButton();
+    readonly MMenu moreMenu = new MMenu();
     readonly DbPanel toolbar = new DbPanel();
     readonly SearchBox search = new SearchBox();
     readonly Chip chipHide = new Chip();
@@ -817,8 +820,20 @@ class MainForm : Form
         btnRefresh.Size = new Size(Dp(44), Dp(44));
         btnRefresh.Click += (s, e) => Reload();
         appBar.Controls.Add(btnRefresh);
-        appBar.Resize += (s, e) => btnRefresh.Location = new Point(appBar.Width - btnRefresh.Width - Dp(16), (appBar.Height - btnRefresh.Height) / 2);
+        btnMore.Glyph = Theme.GMore; btnMore.Text = "…";
+        btnMore.Fore = Theme.OnPrimary;
+        btnMore.Size = new Size(Dp(44), Dp(44));
+        btnMore.Click += (s, e) => moreMenu.Show(btnMore, new Point(btnMore.Width, btnMore.Height + Dp(4)), ToolStripDropDownDirection.BelowLeft);
+        moreMenu.Add("Back up overrides…", Theme.GSave, BackUp);
+        moreMenu.Add("Restore from backup…", Theme.GOpenFile, Restore);
+        appBar.Controls.Add(btnMore);
+        appBar.Resize += (s, e) =>
+        {
+            btnMore.Location = new Point(appBar.Width - btnMore.Width - Dp(16), (appBar.Height - btnMore.Height) / 2);
+            btnRefresh.Location = new Point(btnMore.Left - btnRefresh.Width - Dp(4), btnMore.Top);
+        };
         new ToolTip().SetToolTip(btnRefresh, "Refresh (F5)");
+        new ToolTip().SetToolTip(btnMore, "Back up and restore");
 
         // Toolbar
         toolbar.Dock = DockStyle.Top;
@@ -1807,6 +1822,118 @@ class MainForm : Form
         });
         worker.IsBackground = true;
         worker.Start();
+    }
+
+    // ---------- Back up and restore ----------
+    static List<Backup.Item> CurrentOverrides()
+    {
+        var items = new List<Backup.Item>();
+        foreach (bool lm in new[] { true, false })
+            foreach (var kv in Compat.ReadAll(lm ? RegistryHive.LocalMachine : RegistryHive.CurrentUser))
+                if (Compat.ModeOf(kv.Value) != "Not set") items.Add(new Backup.Item { AllUsers = lm, Exe = kv.Key, Value = kv.Value });
+        return items;
+    }
+
+    void BackUp()
+    {
+        List<Backup.Item> items;
+        try { items = CurrentOverrides(); }
+        catch (Exception ex) { ShowSnack("Couldn't read the overrides: " + ex.Message, true); return; }
+        if (items.Count == 0) { ShowSnack("There are no overrides to back up yet", false); return; }
+        using (var dlg = new SaveFileDialog
+        {
+            Title = "Back up DPI overrides",
+            Filter = "Registry file (*.reg)|*.reg",
+            FileName = "DPI overrides " + DateTime.Now.ToString("yyyy-MM-dd") + ".reg",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        })
+        {
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            string file = dlg.FileName;
+            try
+            {
+                File.WriteAllText(file, Backup.Write(items), System.Text.Encoding.Unicode);   // UTF-16 with BOM, like regedit's exports
+                Program.Log("backed up " + items.Count + " overrides to " + file);
+                ShowSnack("Backed up " + items.Count + " overrides to " + Path.GetFileName(file), false, "SHOW",
+                          () => { try { Process.Start("explorer.exe", "/select,\"" + file + "\""); } catch { } });
+            }
+            catch (Exception ex)
+            {
+                Program.Log("backup failed: " + ex);
+                ShowSnack("Couldn't save the backup: " + ex.Message, true);
+            }
+        }
+    }
+
+    // Sets the DPI mode of every program in a backup. Other compatibility flags, and programs that aren't in the
+    // backup, stay as they are.
+    void Restore()
+    {
+        string file;
+        using (var dlg = new OpenFileDialog
+        {
+            Title = "Restore DPI overrides",
+            Filter = "Registry file (*.reg)|*.reg",
+            InitialDirectory = Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),
+        })
+        {
+            if (dlg.ShowDialog(this) != DialogResult.OK) return;
+            file = dlg.FileName;
+        }
+        List<Backup.Item> items;
+        Dictionary<string, string> lm, cu;
+        try
+        {
+            items = Backup.Read(File.ReadAllText(file));
+            lm = Compat.ReadAll(RegistryHive.LocalMachine);
+            cu = Compat.ReadAll(RegistryHive.CurrentUser);
+        }
+        catch (Exception ex) { ShowSnack("Couldn't read " + Path.GetFileName(file) + ": " + ex.Message, true); return; }
+        if (items.Count == 0) { ShowSnack("No DPI overrides found in " + Path.GetFileName(file), true); return; }
+
+        var changes = items.Where(i =>
+        {
+            string now;
+            (i.AllUsers ? lm : cu).TryGetValue(i.Exe, out now);
+            return Compat.ModeOf(now) != Compat.ModeOf(i.Value);
+        }).ToList();
+        if (changes.Count == 0) { ShowSnack("All " + items.Count + " overrides in the backup are already set", false); return; }
+        if (!ConfirmDialog.Ask(this, "Restore " + changes.Count + " override" + (changes.Count == 1 ? "" : "s") + "?",
+                changes.Count + " of the " + items.Count + " programs in " + Path.GetFileName(file) +
+                " have a different setting now. They get the setting from the backup. Other compatibility settings, and " +
+                "programs that aren't in the backup, stay as they are.", "Restore"))
+            return;
+
+        var errors = new List<string>();
+        foreach (var i in changes)
+        {
+            string mode = Compat.ModeOf(i.Value);
+            try
+            {
+                Compat.Set(i.AllUsers ? RegistryHive.LocalMachine : RegistryHive.CurrentUser, i.Exe, mode);
+                Program.Log("restored " + mode + (i.AllUsers ? "" : " (current user)") + " for " + i.Exe);
+            }
+            catch (Exception ex)
+            {
+                errors.Add(Grouping.FileName(i.Exe) + ": " + ex.Message);
+                Program.Log("restore failed for " + i.Exe + ": " + ex);
+            }
+        }
+        var paths = changes.Select(i => i.Exe).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        search.Box.Text = "";
+        chipOverride.Checked = false;
+        chipBlurry.Checked = false;
+        Reload(paths);
+        if (errors.Count > 0)
+        {
+            ShowSnack(errors.Count + " of " + changes.Count + " couldn't be restored", true);
+            MessageBox.Show(this, string.Join("\n", errors), "Some overrides weren't restored", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            return;
+        }
+        string what = "Restored " + changes.Count + " override" + (changes.Count == 1 ? "" : "s");
+        var running = entries.Where(en => en.Running && paths.Contains(en.Path, StringComparer.OrdinalIgnoreCase)).ToList();
+        if (running.Count > 0) ShowSnack(what + ". Restart to apply.", false, "RESTART", () => RestartEntries(running));
+        else ShowSnack(what + ".", false);
     }
 
     // ---------- Right-click menu on rows ----------
