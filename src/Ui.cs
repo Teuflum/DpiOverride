@@ -102,10 +102,11 @@ static class Theme
         catch { }
     }
 
-    // Dark or light scrollbars on a list
+    // Dark or light scrollbars on a list (DbListView keeps the theme from painting its own selection);
+    // null goes back to the default look
     public static void Scrollbars(IntPtr hwnd)
     {
-        try { SetWindowTheme(hwnd, Dark ? "DarkMode_Explorer" : "Explorer", null); } catch { }
+        try { SetWindowTheme(hwnd, Dark ? "DarkMode_Explorer" : null, null); } catch { }
     }
 
     public const string GFile = "\uE8A5", GFolder = "\uE8B7", GOpenFolder = "\uE838", GCopy = "\uE8C8", GRemove = "\uE711",
@@ -262,6 +263,38 @@ class DbPanel : Panel
 class DbListView : ListView
 {
     public DbListView() { DoubleBuffered = true; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct NMHDR { public IntPtr hwndFrom; public UIntPtr idFrom; public int code; }
+
+    // NMHDR stays a nested struct: on 64-bit it's padded to 24 bytes before dwDrawStage
+    [StructLayout(LayoutKind.Sequential)]
+    struct NMCUSTOMDRAW
+    {
+        public NMHDR hdr;
+        public int dwDrawStage; public IntPtr hdc; public int left, top, right, bottom;
+        public IntPtr dwItemSpec; public uint uItemState; public IntPtr lItemlParam;
+    }
+
+    // In details view WinForms lets the list keep drawing after DrawItem, and a themed list (dark scrollbars need
+    // the Explorer theme) then paints its own translucent selection over the owner-drawn row. So the list is asked
+    // for a post-paint notification and the row is drawn once more on top.
+    protected override void WndProc(ref Message m)
+    {
+        base.WndProc(ref m);
+        if (m.Msg != 0x204E /* WM_REFLECT + WM_NOTIFY */ || !OwnerDraw) return;
+        var cd = (NMCUSTOMDRAW)Marshal.PtrToStructure(m.LParam, typeof(NMCUSTOMDRAW));
+        if (cd.hdr.code != -12 /* NM_CUSTOMDRAW */) return;
+        if (cd.dwDrawStage == 0x10001 /* CDDS_ITEMPREPAINT */)
+            m.Result = (IntPtr)(m.Result.ToInt64() | 0x10 /* CDRF_NOTIFYPOSTPAINT */);
+        else if (cd.dwDrawStage == 0x10002 /* CDDS_ITEMPOSTPAINT */)
+        {
+            int i = (int)cd.dwItemSpec.ToInt64();
+            if (i < 0 || i >= Items.Count) return;
+            using (var g = Graphics.FromHdc(cd.hdc))
+                OnDrawItem(new DrawListViewItemEventArgs(g, Items[i], GetItemRect(i), i, 0));
+        }
+    }
 }
 
 // Base for owner-drawn interactive controls with hover/pressed state layers
