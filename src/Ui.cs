@@ -950,6 +950,18 @@ class MainForm : Form
         }
     }
 
+    // WinForms rewrites the window's extended style from CreateParams (e.g. when it's shown), which would drop the
+    // WS_EX_ACCEPTFILES that DragAcceptFiles sets, so it's part of CreateParams
+    protected override CreateParams CreateParams
+    {
+        get
+        {
+            var cp = base.CreateParams;
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT) cp.ExStyle |= 0x10 /* WS_EX_ACCEPTFILES */;
+            return cp;
+        }
+    }
+
     // Programs, shortcuts and folders dropped onto the window (Windows: WM_DROPFILES, see FileDrop)
     protected override void WndProc(ref Message m)
     {

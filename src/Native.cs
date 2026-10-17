@@ -390,6 +390,7 @@ static class FileDrop
         }
         catch (EntryPointNotFoundException) { }
         DragAcceptFiles(hWnd, true);
+        Program.Log("accepting dropped files");
     }
 
     // The dropped paths; frees the drop handle
