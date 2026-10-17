@@ -119,6 +119,96 @@ static class Compat
     }
 }
 
+// Backups of the DPI overrides as a .reg file, so a backup can also be restored by double-clicking it.
+// Reading one only looks at the two Layers sections, so a .reg file with other keys can't change anything else.
+static class Backup
+{
+    public const string LmKey = @"HKEY_LOCAL_MACHINE\" + Compat.LayersPath;
+    public const string CuKey = @"HKEY_CURRENT_USER\" + Compat.LayersPath;
+
+    public class Item
+    {
+        public bool AllUsers;          // HKLM, otherwise HKCU
+        public string Exe, Value;
+    }
+
+    static string Quote(string s) { return "\"" + s.Replace("\\", "\\\\").Replace("\"", "\\\"") + "\""; }
+
+    // Values with a DPI mode, both hives
+    public static string Write(IEnumerable<Item> items)
+    {
+        var sb = new StringBuilder("Windows Registry Editor Version 5.00\r\n");
+        foreach (bool lm in new[] { true, false })
+        {
+            var part = items.Where(i => i.AllUsers == lm).OrderBy(i => i.Exe, StringComparer.OrdinalIgnoreCase).ToList();
+            if (part.Count == 0) continue;
+            sb.Append("\r\n[" + (lm ? LmKey : CuKey) + "]\r\n");
+            foreach (var i in part) sb.Append(Quote(i.Exe) + "=" + Quote(i.Value) + "\r\n");
+        }
+        return sb.ToString();
+    }
+
+    // Reads a quoted .reg string starting at s[at]; returns null when it isn't one
+    static string Unquote(string s, ref int at)
+    {
+        if (at >= s.Length || s[at] != '"') return null;
+        var sb = new StringBuilder();
+        for (int i = at + 1; i < s.Length; i++)
+        {
+            char c = s[i];
+            if (c == '\\' && i + 1 < s.Length) { sb.Append(s[++i]); continue; }
+            if (c == '"') { at = i + 1; return sb.ToString(); }
+            sb.Append(c);
+        }
+        return null;
+    }
+
+    // String values from the Layers sections that set a DPI mode
+    public static List<Item> Read(string text)
+    {
+        var items = new List<Item>();
+        bool? lm = null;
+        foreach (var raw in text.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None))
+        {
+            string line = raw.Trim();
+            if (line.StartsWith("["))
+            {
+                string key = line.Trim('[', ']');
+                lm = string.Equals(key, LmKey, StringComparison.OrdinalIgnoreCase) ? true
+                   : string.Equals(key, CuKey, StringComparison.OrdinalIgnoreCase) ? false : (bool?)null;
+                continue;
+            }
+            if (lm == null) continue;
+            int at = 0;
+            string exe = Unquote(line, ref at);
+            if (exe == null || at >= line.Length || line[at] != '=') continue;
+            at++;
+            string value = Unquote(line, ref at);
+            if (value == null || exe.Length == 0 || Compat.ModeOf(value) == "Not set") continue;
+            items.Add(new Item { AllUsers = lm.Value, Exe = exe, Value = value });
+        }
+        return items;
+    }
+
+    public static int SelfTest()
+    {
+        var items = new List<Item> {
+            new Item { AllUsers = true, Exe = @"C:\Games\My ""Quoted"" Game\game.exe", Value = "~ RUNASADMIN HIGHDPIAWARE" },
+            new Item { AllUsers = true, Exe = @"\\nas\tools\a.exe", Value = "~ DPIUNAWARE" },
+            new Item { AllUsers = false, Exe = @"C:\Tools\b.exe", Value = "~ GDIDPISCALING DPIUNAWARE" },
+        };
+        string text = Write(items) +
+            "\r\n[HKEY_LOCAL_MACHINE\\SOFTWARE\\Evil]\r\n\"C:\\\\x.exe\"=\"~ HIGHDPIAWARE\"\r\n" +   // other keys are ignored
+            "\r\n[" + LmKey + "]\r\n\"C:\\\\c.exe\"=\"~ WIN7RTM\"\r\n\"C:\\\\d.exe\"=dword:00000001\r\n";   // no DPI mode, not a string
+        var back = Read(text);
+        bool ok = back.Count == 3 && items.All(i => back.Any(b => b.AllUsers == i.AllUsers && b.Exe == i.Exe && b.Value == i.Value));
+        Console.WriteLine((ok ? "OK   " : "FAIL ") + "backup round trip (" + back.Count + " items)");
+        bool lf = Read(text.Replace("\r\n", "\n")).Count == 3;
+        Console.WriteLine((lf ? "OK   " : "FAIL ") + "backup with LF line ends");
+        return (ok ? 0 : 1) + (lf ? 0 : 1);
+    }
+}
+
 static class Procs
 {
     [DllImport("kernel32.dll", SetLastError = true)]
@@ -542,7 +632,7 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
-        if (args.Length > 0 && args[0] == "--selftest") return Compat.SelfTest() + Grouping.SelfTest();
+        if (args.Length > 0 && args[0] == "--selftest") return Compat.SelfTest() + Grouping.SelfTest() + Backup.SelfTest();
         Demo = args.Contains("--demo");
         // full paths, because the elevated copy starts in System32
         StartPaths = args.Where(a => !a.StartsWith("--")).Select(a => { try { return System.IO.Path.GetFullPath(a); } catch { return a; } }).ToList();
