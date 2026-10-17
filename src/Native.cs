@@ -216,52 +216,180 @@ static class Restarter
         }
     }
 
-    // Closes every instance of the program (politely first, then forcefully) and starts it again
-    // with the original arguments. Returns null on success, otherwise an error message.
-    public static string Restart(string exe, List<int> pids)
+    // Process id of the process that started this one, or 0
+    static int ParentOf(int pid)
     {
-        if (pids.Count == 0) return "not running";
-
-        // Remember how the main instance was started: prefer one with a window
-        int main = pids[0];
-        foreach (var pid in pids)
-        {
-            try { using (var p = Process.GetProcessById(pid)) if (p.MainWindowHandle != IntPtr.Zero) { main = pid; break; } }
-            catch { }
-        }
-        string args = ArgumentsOf(CommandLineOf(main));
-        bool elevated = IsElevated(main);
-        Program.Log("restart " + exe + " args=[" + args + "] elevated=" + elevated);
-
-        var procs = new List<Process>();
-        foreach (var pid in pids) { try { procs.Add(Process.GetProcessById(pid)); } catch { } }
+        IntPtr h = OpenProcess(QUERY_LIMITED, false, pid);
+        if (h == IntPtr.Zero) return 0;
+        int size = IntPtr.Size * 6;                                  // PROCESS_BASIC_INFORMATION
+        IntPtr buf = Marshal.AllocHGlobal(size);
         try
         {
-            foreach (var p in procs) { try { p.CloseMainWindow(); } catch { } }
+            int len;
+            if (NtQueryInformationProcess(h, 0 /* ProcessBasicInformation */, buf, size, out len) != 0) return 0;
+            return (int)Marshal.ReadIntPtr(buf, IntPtr.Size * 5).ToInt64();   // InheritedFromUniqueProcessId
+        }
+        catch { return 0; }
+        finally { Marshal.FreeHGlobal(buf); CloseHandle(h); }
+    }
+
+    public class Job
+    {
+        public string Exe, Display;
+        public List<int> Pids;
+        internal int Main, Parent;
+        internal string Args;
+        internal bool Elevated;
+    }
+
+    // Closes every instance of the programs (politely first, then forcefully) and starts them again with their
+    // original arguments. A program that was started by another one in the list (e.g. a game client's helper)
+    // is left for that program to start again. Returns the errors as "name: message".
+    public static List<string> RestartAll(List<Job> jobs)
+    {
+        var errors = new List<string>();
+        jobs = jobs.Where(j => j.Pids.Count > 0).ToList();
+        foreach (var j in jobs)
+        {
+            // Remember how the main instance was started: prefer one with a window
+            j.Main = j.Pids[0];
+            foreach (var pid in j.Pids)
+            {
+                try { using (var p = Process.GetProcessById(pid)) if (p.MainWindowHandle != IntPtr.Zero) { j.Main = pid; break; } }
+                catch { }
+            }
+            j.Args = ArgumentsOf(CommandLineOf(j.Main));
+            j.Elevated = IsElevated(j.Main);
+            j.Parent = ParentOf(j.Main);
+        }
+        var starts = jobs.Where(j => !jobs.Any(o => o != j && o.Pids.Contains(j.Parent))).ToList();
+        foreach (var j in jobs)
+            Program.Log("restart " + j.Exe + " args=[" + j.Args + "] elevated=" + j.Elevated +
+                        (starts.Contains(j) ? "" : " (started by another program in the list, not starting it)"));
+
+        var procs = new List<KeyValuePair<Job, Process>>();
+        foreach (var j in jobs)
+            foreach (var pid in j.Pids) { try { procs.Add(new KeyValuePair<Job, Process>(j, Process.GetProcessById(pid))); } catch { } }
+        var failed = new HashSet<Job>();
+        try
+        {
+            foreach (var kv in procs) { try { kv.Value.CloseMainWindow(); } catch { } }
             var deadline = DateTime.Now.AddSeconds(6);
-            foreach (var p in procs)
+            foreach (var kv in procs)
             {
                 try
                 {
                     int left = (int)Math.Max(0, (deadline - DateTime.Now).TotalMilliseconds);
-                    if (!p.WaitForExit(left)) { p.Kill(); p.WaitForExit(3000); }
+                    if (!kv.Value.WaitForExit(left)) { kv.Value.Kill(); kv.Value.WaitForExit(3000); }
                 }
                 catch { }
             }
-            if (procs.Any(p => { try { return !p.HasExited; } catch { return false; } }))
-                return "it didn't close";
+            foreach (var kv in procs)
+            {
+                bool alive;
+                try { alive = !kv.Value.HasExited; } catch { alive = false; }
+                if (alive && failed.Add(kv.Key)) errors.Add(kv.Key.Display + ": it didn't close");
+            }
         }
-        finally { foreach (var p in procs) p.Dispose(); }
+        finally { foreach (var kv in procs) kv.Value.Dispose(); }
 
         Thread.Sleep(400);
-        string error = null;
-        if (!elevated && StartUnelevated(exe, args, out error)) return null;
-        if (error != null) Program.Log("unelevated start failed (" + error + "), starting directly");
+        foreach (var j in starts)
+        {
+            if (failed.Contains(j)) continue;
+            string error = null;
+            if (!j.Elevated && StartUnelevated(j.Exe, j.Args, out error)) continue;
+            if (error != null) Program.Log("unelevated start failed (" + error + "), starting directly");
+            try { Process.Start(new ProcessStartInfo(j.Exe, j.Args) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(j.Exe) }); }
+            catch (Exception ex) { errors.Add(j.Display + ": couldn't start it again: " + ex.Message); }
+        }
+        return errors;
+    }
+}
+
+// Folder picker: the modern Explorer-style dialog, or the classic tree dialog when that isn't available
+static class FolderPicker
+{
+    [ComImport, Guid("DC1C5A9C-E88A-4dde-A5A1-60F82A20AEF7")]
+    class FileOpenDialog { }
+
+    [ComImport, Guid("42f85136-db7e-439c-85f1-e4075d135fc8"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IFileDialog
+    {
+        [PreserveSig] int Show(IntPtr parent);                       // IModalWindow
+        void SetFileTypes(uint count, IntPtr specs);
+        void SetFileTypeIndex(uint index);
+        void GetFileTypeIndex(out uint index);
+        void Advise(IntPtr events, out uint cookie);
+        void Unadvise(uint cookie);
+        void SetOptions(uint fos);
+        void GetOptions(out uint fos);
+        void SetDefaultFolder(IShellItem item);
+        void SetFolder(IShellItem item);
+        void GetFolder(out IShellItem item);
+        void GetCurrentSelection(out IShellItem item);
+        void SetFileName([MarshalAs(UnmanagedType.LPWStr)] string name);
+        void GetFileName([MarshalAs(UnmanagedType.LPWStr)] out string name);
+        void SetTitle([MarshalAs(UnmanagedType.LPWStr)] string title);
+        void SetOkButtonLabel([MarshalAs(UnmanagedType.LPWStr)] string text);
+        void SetFileNameLabel([MarshalAs(UnmanagedType.LPWStr)] string label);
+        void GetResult(out IShellItem item);
+    }
+
+    [ComImport, Guid("43826D1E-E718-42EE-BC55-A1E261C37BFE"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellItem
+    {
+        void BindToHandler(IntPtr pbc, ref Guid bhid, ref Guid riid, out IntPtr ppv);
+        void GetParent(out IShellItem parent);
+        void GetDisplayName(uint sigdn, [MarshalAs(UnmanagedType.LPWStr)] out string name);
+    }
+
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode, PreserveSig = false)]
+    static extern void SHCreateItemFromParsingName(string path, IntPtr pbc, [MarshalAs(UnmanagedType.LPStruct)] Guid riid, out IShellItem item);
+
+    // Returns the chosen folder, or null when cancelled
+    public static string Pick(System.Windows.Forms.IWin32Window owner, string title, string start)
+    {
+        if (Environment.OSVersion.Platform == PlatformID.Win32NT)
+        {
+            try { return PickModern(owner, title, start); }
+            catch (Exception ex) { Program.Log("modern folder dialog failed: " + ex.Message); }
+        }
+        using (var d = new System.Windows.Forms.FolderBrowserDialog { Description = title, ShowNewFolderButton = false })
+        {
+            if (!string.IsNullOrEmpty(start) && Directory.Exists(start)) d.SelectedPath = start;
+            return d.ShowDialog(owner) == System.Windows.Forms.DialogResult.OK ? d.SelectedPath : null;
+        }
+    }
+
+    static string PickModern(System.Windows.Forms.IWin32Window owner, string title, string start)
+    {
+        var dlg = (IFileDialog)new FileOpenDialog();
         try
         {
-            Process.Start(new ProcessStartInfo(exe, args) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(exe) });
-            return null;
+            uint fos;
+            dlg.GetOptions(out fos);
+            dlg.SetOptions(fos | 0x20 /* PICKFOLDERS */ | 0x40 /* FORCEFILESYSTEM */ | 0x800 /* PATHMUSTEXIST */);
+            dlg.SetTitle(title);
+            if (!string.IsNullOrEmpty(start) && Directory.Exists(start))
+            {
+                try
+                {
+                    IShellItem folder;
+                    SHCreateItemFromParsingName(start, IntPtr.Zero, typeof(IShellItem).GUID, out folder);
+                    dlg.SetFolder(folder);
+                }
+                catch { }
+            }
+            int hr = dlg.Show(owner != null ? owner.Handle : IntPtr.Zero);
+            if (hr == unchecked((int)0x800704C7)) return null;           // cancelled
+            if (hr != 0) throw new COMException("folder dialog", hr);
+            IShellItem item;
+            dlg.GetResult(out item);
+            string path;
+            item.GetDisplayName(0x80058000 /* SIGDN_FILESYSPATH */, out path);
+            return path;
         }
-        catch (Exception ex) { return "couldn't start it again: " + ex.Message; }
+        finally { Marshal.ReleaseComObject(dlg); }
     }
 }
