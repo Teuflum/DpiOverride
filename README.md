@@ -52,4 +52,9 @@ The output is `bin/DpiOverride.exe`.
 
 `DpiOverride.exe --selftest` runs the flag-rewriting and folder-grouping unit checks.
 `DpiOverride.exe --demo` shows fake running programs (used to test the UI under Mono on Linux).
-`DpiOverride.exe "<program.exe or folder>"` opens with that program, or every program in that folder, added and selected.
+`DpiOverride.exe "<program.exe, shortcut or folder>"` opens with that program, or every program in that folder, added and selected.
+
+Programs, shortcuts (.lnk) and folders can also be dropped onto the window. A shortcut to a Squirrel launcher
+(Discord, Slack, …) adds the real program from the newest `app-<version>` folder. Because the tool runs as
+administrator, it accepts drops through `WM_DROPFILES` (Windows blocks normal drag and drop from Explorer into
+elevated windows).

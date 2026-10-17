@@ -364,6 +364,27 @@ static class Grouping
         return n.Length > 0 ? n : root;
     }
 
+    // Squirrel installs (Discord, Slack, GitHub Desktop, ...) put a launcher stub next to "app-<version>" folders that
+    // hold the real program, and shortcuts point at the stub. Returns the newest real program, or the path unchanged.
+    public static string RealProgram(string exe)
+    {
+        try
+        {
+            string dir = FolderOf(exe), name = FileName(exe);
+            Version best = null; string found = null;
+            foreach (var sub in Directory.GetDirectories(dir, "app-*"))
+            {
+                Version v;
+                string candidate = Path.Combine(sub, name);
+                if (!File.Exists(candidate)) continue;
+                try { v = new Version(FileName(sub).Substring(4)); } catch { v = new Version(0, 0); }
+                if (best == null || v > best) { best = v; found = candidate; }
+            }
+            return found ?? exe;
+        }
+        catch { return exe; }
+    }
+
     // Every .exe in a folder and its subfolders (skips folders it can't read and junctions)
     public static List<string> FindExes(string dir, int max)
     {

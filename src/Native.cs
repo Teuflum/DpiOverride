@@ -364,6 +364,87 @@ static class Restarter
     }
 }
 
+// Files dropped from Explorer. The app runs elevated, and Windows blocks OLE drag and drop from the normal-user
+// Explorer into it. The older WM_DROPFILES message still works when the window lets it (and the two messages that
+// carry the file list) through the elevation filter.
+static class FileDrop
+{
+    public const int WM_DROPFILES = 0x0233;
+
+    [DllImport("shell32.dll")]
+    static extern void DragAcceptFiles(IntPtr hWnd, bool accept);
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    static extern uint DragQueryFile(IntPtr hDrop, uint index, StringBuilder file, int size);
+    [DllImport("shell32.dll")]
+    static extern void DragFinish(IntPtr hDrop);
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool ChangeWindowMessageFilterEx(IntPtr hWnd, uint msg, uint action, IntPtr info);   // Windows 7+
+
+    public static void Enable(IntPtr hWnd)
+    {
+        try
+        {
+            foreach (uint msg in new uint[] { WM_DROPFILES, 0x004A /* WM_COPYDATA */, 0x0049 /* WM_COPYGLOBALDATA */ })
+                if (!ChangeWindowMessageFilterEx(hWnd, msg, 1 /* MSGFLT_ALLOW */, IntPtr.Zero))
+                    Program.Log("message filter for 0x" + msg.ToString("X") + " failed: " + Marshal.GetLastWin32Error());
+        }
+        catch (EntryPointNotFoundException) { }
+        DragAcceptFiles(hWnd, true);
+    }
+
+    // The dropped paths; frees the drop handle
+    public static List<string> Paths(IntPtr hDrop)
+    {
+        var paths = new List<string>();
+        try
+        {
+            uint count = DragQueryFile(hDrop, 0xFFFFFFFF, null, 0);
+            for (uint i = 0; i < count; i++)
+            {
+                var sb = new StringBuilder((int)DragQueryFile(hDrop, i, null, 0) + 1);
+                DragQueryFile(hDrop, i, sb, sb.Capacity);
+                paths.Add(sb.ToString());
+            }
+        }
+        finally { DragFinish(hDrop); }
+        return paths;
+    }
+}
+
+// Target of a Windows shortcut (.lnk)
+static class Shortcut
+{
+    [ComImport, Guid("00021401-0000-0000-C000-000000000046")]
+    class ShellLink { }
+
+    [ComImport, Guid("000214F9-0000-0000-C000-000000000046"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    interface IShellLinkW
+    {
+        void GetPath([Out, MarshalAs(UnmanagedType.LPWStr)] StringBuilder file, int size, IntPtr findData, uint flags);
+    }
+
+    // The file or folder the shortcut points to, or null (e.g. shortcuts to Store apps or installer-advertised programs)
+    public static string Target(string lnk)
+    {
+        object link = null;
+        try
+        {
+            link = new ShellLink();
+            ((System.Runtime.InteropServices.ComTypes.IPersistFile)link).Load(lnk, 0 /* STGM_READ */);
+            var sb = new StringBuilder(32768);
+            ((IShellLinkW)link).GetPath(sb, sb.Capacity, IntPtr.Zero, 0);
+            string target = Environment.ExpandEnvironmentVariables(sb.ToString());
+            return target.Length > 0 ? target : null;
+        }
+        catch (Exception ex)
+        {
+            Program.Log("couldn't read shortcut " + lnk + ": " + ex.Message);
+            return null;
+        }
+        finally { if (link != null) Marshal.ReleaseComObject(link); }
+    }
+}
+
 // Folder picker: the modern Explorer-style dialog, or the classic tree dialog when that isn't available
 static class FolderPicker
 {
