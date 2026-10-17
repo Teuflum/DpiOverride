@@ -54,6 +54,10 @@ The output is `bin/DpiOverride.exe`.
 `DpiOverride.exe --demo` shows fake running programs (used to test the UI under Mono on Linux).
 `DpiOverride.exe "<program.exe, shortcut or folder>"` opens with that program, or every program in that folder, added and selected.
 
+**Undo:** every change (Apply, Off, Remove override, Restore from backup) can be undone with UNDO in the
+message that follows it, Ctrl+Z, or ⋯ → Undo. It puts back the exact previous values, other compatibility flags
+included, for the last 20 changes while the app is open.
+
 **Back up and restore** (⋯ menu in the title bar): *Back up overrides…* saves every DPI override (all users and
 current user) as a `.reg` file, which can also be restored by double-clicking it. *Restore from backup…* reads only the
 DPI override keys from such a file and sets each program's DPI mode as in the backup; other compatibility flags,

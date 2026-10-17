@@ -95,6 +95,27 @@ static class Compat
         }
     }
 
+    // The raw value for a program, or null when there's none
+    public static string Raw(RegistryHive hive, string exe)
+    {
+        using (var k = Open(hive, false))
+        {
+            if (k == null) return null;
+            var v = k.GetValue(exe);
+            return v == null ? null : Convert.ToString(v);
+        }
+    }
+
+    // Puts a raw value back exactly as it was; null deletes it
+    public static void SetRaw(RegistryHive hive, string exe, string value)
+    {
+        using (var k = Open(hive, true))
+        {
+            if (value != null) k.SetValue(exe, value, RegistryValueKind.String);
+            else k.DeleteValue(exe, false);
+        }
+    }
+
     public static int SelfTest()
     {
         var cases = new[] {
@@ -116,6 +137,49 @@ static class Compat
         foreach (var v in new[] { "~ HIGHDPIAWARE", "~ DPIUNAWARE", "~ GDIDPISCALING DPIUNAWARE", "~ RUNASADMIN", "~ highdpiaware" })
             Console.WriteLine("mode [" + v + "] = " + ModeOf(v));
         return fail;
+    }
+}
+
+// One registry change that can be undone: the exact values before and after
+class UndoStep
+{
+    public class Change
+    {
+        public RegistryHive Hive;
+        public string Exe, Before, After;
+    }
+
+    public string Label;
+    public List<Change> Changes = new List<Change>();
+
+    // Remembers the current values of these programs in both hives, before they're changed
+    public static UndoStep Begin(string label, IEnumerable<string> exes)
+    {
+        var step = new UndoStep { Label = label };
+        foreach (var exe in exes.Distinct(StringComparer.OrdinalIgnoreCase))
+            foreach (var hive in new[] { RegistryHive.LocalMachine, RegistryHive.CurrentUser })
+                step.Changes.Add(new Change { Hive = hive, Exe = exe, Before = Compat.Raw(hive, exe) });
+        return step;
+    }
+
+    // Reads the values after the change and keeps only the ones that changed; false when nothing did
+    public bool End()
+    {
+        foreach (var c in Changes) c.After = Compat.Raw(c.Hive, c.Exe);
+        Changes = Changes.Where(c => c.Before != c.After).ToList();
+        return Changes.Count > 0;
+    }
+
+    // Puts every value back; returns the errors
+    public List<string> Revert()
+    {
+        var errors = new List<string>();
+        foreach (var c in Changes)
+        {
+            try { Compat.SetRaw(c.Hive, c.Exe, c.Before); }
+            catch (Exception ex) { errors.Add(Grouping.FileName(c.Exe) + ": " + ex.Message); }
+        }
+        return errors;
     }
 }
 

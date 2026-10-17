@@ -41,7 +41,7 @@ static class Theme
     public static readonly Color Running = C(0x2E7D32);
 
     public const string GFile = "\uE8A5", GFolder = "\uE8B7", GOpenFolder = "\uE838", GCopy = "\uE8C8", GRemove = "\uE711",
-                        GMore = "\uE712", GSave = "\uE74E", GOpenFile = "\uE8E5";
+                        GMore = "\uE712", GSave = "\uE74E", GOpenFile = "\uE8E5", GUndo = "\uE7A7";
 
     public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall;
     public static bool HasIcons;
@@ -366,9 +366,15 @@ class MMenu : ContextMenuStrip
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
             var color = e.Item.Enabled ? Theme.OnSurface : Theme.Mix(Theme.SurfaceContainer, Theme.OnSurface, 0.38f);
-            var r = new Rectangle(e.TextRectangle.X, 0, e.Item.Width - e.TextRectangle.X, e.Item.Height);
-            TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, r, color,
-                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+            var flags = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter;
+            if (e.Text != e.Item.Text)   // the shortcut ("Ctrl+Z"): right-aligned in its own rectangle, muted
+            {
+                var sr = new Rectangle(e.TextRectangle.X, 0, e.TextRectangle.Width, e.Item.Height);
+                TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, sr, Theme.OnSurfaceVariant, flags | TextFormatFlags.Right);
+                return;
+            }
+            var r = new Rectangle(e.TextRectangle.X, 0, e.TextRectangle.Width, e.Item.Height);
+            TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, r, color, flags | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
         }
 
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
@@ -600,10 +606,11 @@ class Snackbar : Control
 {
     readonly Timer timer = new Timer();
     bool error;
-    string actionText;
-    Action action;
-    Rectangle actionRect;
-    bool actionHover;
+    // Up to two text buttons on the right, e.g. UNDO and RESTART
+    string[] actionTexts = new string[0];
+    Action[] actions = new Action[0];
+    Rectangle[] actionRects = new Rectangle[0];
+    int hover = -1;
 
     public Snackbar()
     {
@@ -613,37 +620,51 @@ class Snackbar : Control
         Cursor = Cursors.Hand;
     }
 
+    int HitAction(Point p)
+    {
+        for (int i = 0; i < actionRects.Length; i++) if (actionRects[i].Contains(p)) return i;
+        return -1;
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
-        bool h = actionText != null && actionRect.Contains(e.Location);
-        if (h != actionHover) { actionHover = h; Invalidate(); }
+        int h = HitAction(e.Location);
+        if (h != hover) { hover = h; Invalidate(); }
         base.OnMouseMove(e);
     }
-    protected override void OnMouseLeave(EventArgs e) { actionHover = false; Invalidate(); base.OnMouseLeave(e); }
+    protected override void OnMouseLeave(EventArgs e) { hover = -1; Invalidate(); base.OnMouseLeave(e); }
 
     protected override void OnMouseClick(MouseEventArgs e)
     {
-        var a = action;
-        bool hitAction = actionText != null && actionRect.Contains(e.Location);
+        int hit = HitAction(e.Location);
+        var a = hit >= 0 ? actions[hit] : null;
         Visible = false; timer.Stop();
-        if (hitAction && a != null) a();
+        if (a != null) a();
         base.OnMouseClick(e);
     }
 
-    public void Show(string text, bool isError, Rectangle area, string actionLabel = null, Action onAction = null)
+    public void Show(string text, bool isError, Rectangle area, string actionLabel = null, Action onAction = null,
+                     string action2Label = null, Action onAction2 = null)
     {
-        Text = text; error = isError; actionText = actionLabel; action = onAction;
-        int actionW = actionText != null ? Theme.Measure(actionText, Theme.Label) + Theme.Dp(32) : 0;
-        int w = Math.Min(area.Width - Theme.Dp(32), Theme.Measure(text, Theme.Body) + Theme.Dp(72) + actionW);
+        Text = text; error = isError; hover = -1;
+        var labels = new List<string>(); var acts = new List<Action>();
+        if (actionLabel != null) { labels.Add(actionLabel); acts.Add(onAction); }
+        if (action2Label != null) { labels.Add(action2Label); acts.Add(onAction2); }
+        actionTexts = labels.ToArray(); actions = acts.ToArray();
+        var widths = actionTexts.Select(t => Theme.Measure(t, Theme.Label) + Theme.Dp(32)).ToArray();
+        int actionsW = widths.Sum();
+        int w = Math.Min(area.Width - Theme.Dp(32), Theme.Measure(text, Theme.Body) + Theme.Dp(72) + actionsW);
         int h = Theme.Dp(48);
         Bounds = new Rectangle(area.X + (area.Width - w) / 2, area.Bottom - h - Theme.Dp(16), w, h);
-        actionRect = actionText != null ? new Rectangle(w - actionW - Theme.Dp(4), Theme.Dp(6), actionW, h - Theme.Dp(12)) : Rectangle.Empty;
+        actionRects = new Rectangle[widths.Length];
+        int x = w - Theme.Dp(4) - actionsW;
+        for (int i = 0; i < widths.Length; i++) { actionRects[i] = new Rectangle(x, Theme.Dp(6), widths[i], h - Theme.Dp(12)); x += widths[i]; }
         using (var p = Theme.Round(new RectangleF(0, 0, w, h), Theme.Dp(6))) Region = new Region(p);
         Visible = true;
         BringToFront();
         Invalidate();
         timer.Stop();
-        timer.Interval = actionText != null ? 9000 : 4500;
+        timer.Interval = actionTexts.Length > 0 ? 9000 : 4500;
         timer.Start();
     }
 
@@ -654,12 +675,12 @@ class Snackbar : Control
         Color ic = error ? Color.FromArgb(255, 0xF2, 0xB8, 0xB5) : Theme.InversePrimary;
         Theme.Glyph(g, error ? Theme.GError : Theme.GDone, Theme.Icon, new Rectangle(Theme.Dp(14), 0, Theme.Dp(24), Height), ic);
         int x = Theme.HasIcons ? Theme.Dp(48) : Theme.Dp(16);
-        int right = actionText != null ? actionRect.Left : Width - Theme.Dp(12);
+        int right = actionRects.Length > 0 ? actionRects[0].Left : Width - Theme.Dp(12);
         Theme.Text(g, Text, Theme.Body, new Rectangle(x, 0, right - x, Height), Theme.InverseOnSurface);
-        if (actionText != null)
+        for (int i = 0; i < actionRects.Length; i++)
         {
-            if (actionHover) Theme.FillRound(g, Theme.Alpha(Theme.InversePrimary, 0.12f), actionRect, actionRect.Height / 2f);
-            TextRenderer.DrawText(g, actionText, Theme.Label, actionRect, Theme.InversePrimary,
+            if (hover == i) Theme.FillRound(g, Theme.Alpha(Theme.InversePrimary, 0.12f), actionRects[i], actionRects[i].Height / 2f);
+            TextRenderer.DrawText(g, actionTexts[i], Theme.Label, actionRects[i], Theme.InversePrimary,
                 TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter);
         }
     }
@@ -823,7 +844,17 @@ class MainForm : Form
         btnMore.Glyph = Theme.GMore; btnMore.Text = "…";
         btnMore.Fore = Theme.OnPrimary;
         btnMore.Size = new Size(Dp(44), Dp(44));
-        btnMore.Click += (s, e) => moreMenu.Show(btnMore, new Point(btnMore.Width, btnMore.Height + Dp(4)), ToolStripDropDownDirection.BelowLeft);
+        var undoItem = moreMenu.Add("Undo", Theme.GUndo, () => Undo());
+        undoItem.ShortcutKeyDisplayString = "Ctrl+Z";   // display only: OnKeyDown handles the key
+        undoItem.ShowShortcutKeys = true;
+        moreMenu.AddSeparator();
+        btnMore.Click += (s, e) =>
+        {
+            // before Show, so the menu is sized and placed for the new text
+            undoItem.Enabled = undo.Count > 0;
+            undoItem.Text = undo.Count > 0 ? "Undo: " + Shorten(undo[undo.Count - 1].Label, 48) : "Nothing to undo";
+            moreMenu.Show(btnMore, new Point(btnMore.Width, btnMore.Height + Dp(4)), ToolStripDropDownDirection.BelowLeft);
+        };
         moreMenu.Add("Back up overrides…", Theme.GSave, BackUp);
         moreMenu.Add("Restore from backup…", Theme.GOpenFile, Restore);
         appBar.Controls.Add(btnMore);
@@ -1007,6 +1038,7 @@ class MainForm : Form
     {
         if (e.KeyCode == Keys.F5) { Reload(); e.Handled = true; }
         else if (e.Control && e.KeyCode == Keys.F) { search.Box.Focus(); search.Box.SelectAll(); e.Handled = true; }
+        else if (e.Control && e.KeyCode == Keys.Z && !search.Box.Focused) { Undo(); e.Handled = true; e.SuppressKeyPress = true; }   // the search box keeps its own undo
         base.OnKeyDown(e);
     }
 
@@ -1905,6 +1937,7 @@ class MainForm : Form
             return;
 
         var errors = new List<string>();
+        var step = UndoStep.Begin("restore from " + Path.GetFileName(file), changes.Select(i => i.Exe));
         foreach (var i in changes)
         {
             string mode = Compat.ModeOf(i.Value);
@@ -1919,6 +1952,7 @@ class MainForm : Form
                 Program.Log("restore failed for " + i.Exe + ": " + ex);
             }
         }
+        var kept = Remember(step);
         var paths = changes.Select(i => i.Exe).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         search.Box.Text = "";
         chipOverride.Checked = false;
@@ -1930,10 +1964,7 @@ class MainForm : Form
             MessageBox.Show(this, string.Join("\n", errors), "Some overrides weren't restored", MessageBoxButtons.OK, MessageBoxIcon.Error);
             return;
         }
-        string what = "Restored " + changes.Count + " override" + (changes.Count == 1 ? "" : "s");
-        var running = entries.Where(en => en.Running && paths.Contains(en.Path, StringComparer.OrdinalIgnoreCase)).ToList();
-        if (running.Count > 0) ShowSnack(what + ". Restart to apply.", false, "RESTART", () => RestartEntries(running));
-        else ShowSnack(what + ".", false);
+        ShowChanged("Restored " + changes.Count + " override" + (changes.Count == 1 ? "" : "s"), paths, kept);
     }
 
     // ---------- Right-click menu on rows ----------
@@ -2016,10 +2047,65 @@ class MainForm : Form
         return Awareness.PerMonitor;
     }
 
-    void ShowSnack(string text, bool error, string actionLabel = null, Action onAction = null)
+    void ShowSnack(string text, bool error, string actionLabel = null, Action onAction = null,
+                   string action2Label = null, Action onAction2 = null)
     {
         var area = new Rectangle(0, 0, ClientSize.Width, bottom.Top);
-        snack.Show(text, error, area, actionLabel, onAction);
+        snack.Show(text, error, area, actionLabel, onAction, action2Label, onAction2);
+    }
+
+    // ---------- Undo ----------
+    readonly List<UndoStep> undo = new List<UndoStep>();
+    const int MaxUndo = 20;
+
+    static string Shorten(string s, int max) { return s.Length <= max ? s : s.Substring(0, max - 1) + "…"; }
+
+    // Keeps the step when it changed anything; returns it, or null
+    UndoStep Remember(UndoStep step)
+    {
+        if (!step.End()) return null;
+        undo.Add(step);
+        if (undo.Count > MaxUndo) undo.RemoveAt(0);
+        return step;
+    }
+
+    // Snackbar after a change: UNDO (for exactly this change), plus RESTART when changed programs are running
+    void ShowChanged(string message, List<string> paths, UndoStep step, string groupName = null)
+    {
+        var running = entries.Where(en => en.Running && paths.Contains(en.Path, StringComparer.OrdinalIgnoreCase)).ToList();
+        string undoLabel = step != null ? "UNDO" : null;
+        Action undoIt = () => Undo(step);
+        if (running.Count > 0)
+        {
+            Action restart = () => RestartEntries(running, groupName);
+            if (step != null) ShowSnack(message + ". Restart to apply.", false, undoLabel, undoIt, "RESTART", restart);
+            else ShowSnack(message + ". Restart to apply.", false, "RESTART", restart);
+        }
+        else ShowSnack(message + ".", false, undoLabel, undoIt);
+    }
+
+    // Undoes the latest change; with `only`, just that change and only while it's still the latest
+    void Undo(UndoStep only = null)
+    {
+        if (undo.Count == 0) { ShowSnack("Nothing to undo", false); return; }
+        var step = undo[undo.Count - 1];
+        if (only != null && step != only) { ShowSnack("That change was already undone or another one came after it", false); return; }
+        undo.RemoveAt(undo.Count - 1);
+        var errors = step.Revert();
+        foreach (var c in step.Changes)
+            Program.Log("undo " + (c.Hive == RegistryHive.LocalMachine ? "" : "(current user) ") + c.Exe + ": [" + c.After + "] -> [" + c.Before + "]");
+        foreach (var err in errors) Program.Log("undo failed: " + err);
+        var paths = step.Changes.Select(c => c.Exe).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        Reload(paths);
+        if (errors.Count > 0)
+        {
+            ShowSnack("Couldn't undo everything: " + errors[0], true);
+            return;
+        }
+        var running = entries.Where(en => en.Running && paths.Contains(en.Path, StringComparer.OrdinalIgnoreCase)).ToList();
+        string m = "Undone: " + step.Label;
+        if (running.Count > 0) ShowSnack(m + ". Restart to apply.", false, "RESTART", () => RestartEntries(running));
+        else ShowSnack(m, false);
     }
 
     void Apply() { Apply(ModeKeys[modes.Selected], SelectedEntries()); }
@@ -2031,6 +2117,7 @@ class MainForm : Form
 
         var errors = new List<string>();
         var done = new List<string>();
+        var step = UndoStep.Begin(null, items.Select(i => i.Path));
         foreach (var e in items)
         {
             try
@@ -2046,6 +2133,10 @@ class MainForm : Form
                 Program.Log("set failed for " + e.Path + ": " + ex);
             }
         }
+        string what = done.Count == 1 ? done[0] : groupName != null ? groupName + " (" + done.Count + " programs)" : done.Count + " programs";
+        string m = mode == "Not set" ? "Override removed for " + what : modes.Items[Array.IndexOf(ModeKeys, mode)] + " scaling set for " + what;
+        step.Label = errors.Count == 0 ? m : "the last change";
+        var kept = Remember(step);   // also when some failed: the ones that worked can be undone
         var paths = items.Select(i => i.Path).ToList();
         Reload(paths);
 
@@ -2054,15 +2145,6 @@ class MainForm : Form
             ShowSnack(errors.Count == 1 ? "Couldn't change " + errors[0] : errors.Count + " changes failed", true);
             MessageBox.Show(this, string.Join("\n", errors), "Some changes failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-        else if (done.Count > 0)
-        {
-            string what = done.Count == 1 ? done[0] : groupName != null ? groupName + " (" + done.Count + " programs)" : done.Count + " programs";
-            string m = mode == "Not set" ? "Override removed for " + what : modes.Items[Array.IndexOf(ModeKeys, mode)] + " scaling set for " + what;
-            var runningApplied = entries.Where(en => paths.Contains(en.Path, StringComparer.OrdinalIgnoreCase) && en.Running).ToList();
-            if (runningApplied.Count > 0)
-                ShowSnack(m + ". Restart to apply.", false, "RESTART", () => RestartEntries(runningApplied, groupName));
-            else
-                ShowSnack(m + ".", false);
-        }
+        else if (done.Count > 0) ShowChanged(m, paths, kept, groupName);
     }
 }
