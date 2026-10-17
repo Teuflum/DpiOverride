@@ -1118,7 +1118,7 @@ class MainForm : Form
     }
 
     // ---------- Rendering (live DPI awareness) ----------
-    enum Look { NotRunning, Unknown, Sharp, MainOnly, Blurry, Enhanced, Unscaled }
+    enum Look { NotRunning, NoWindow, Unknown, Sharp, MainOnly, Blurry, Enhanced, Unscaled }
 
     bool AnyScaled { get { return monitorDpis.Count == 0 ? Theme.S > 1.01f : monitorDpis.Any(d => d > 96); } }
     bool MixedDpi { get { return monitorDpis.Distinct().Count() > 1; } }
@@ -1126,6 +1126,7 @@ class MainForm : Form
     Look LookOf(Entry e)
     {
         if (!e.Running) return Look.NotRunning;
+        if (!e.HasWindow) return Look.NoWindow;
         switch (e.Rendering)
         {
             case Awareness.PerMonitor:
@@ -1155,7 +1156,8 @@ class MainForm : Form
             case Look.Unscaled: return 3;
             case Look.Sharp: return 4;
             case Look.Unknown: return 5;
-            default: return 6;
+            case Look.NoWindow: return 6;
+            default: return 7;
         }
     }
 
@@ -1171,6 +1173,7 @@ class MainForm : Form
             case Look.Enhanced: return "Windows scales it with System (Enhanced): text is sharp, some graphics may still be blurry.";
             case Look.Unscaled: return "Doesn't handle DPI itself, but your displays are at 100 %, so nothing is stretched.";
             case Look.Unknown: return "Windows didn't report how this program scales (it may be protected).";
+            case Look.NoWindow: return "Running in the background without a window, so there's nothing on screen that could look blurry.";
             default: return "Not running. Start it to see how it renders.";
         }
     }
@@ -1186,6 +1189,7 @@ class MainForm : Form
             case Look.Enhanced: label = "GDI-scaled"; bg = Theme.InfoBg; fg = Theme.InfoFg; break;
             case Look.Unscaled: label = "Unscaled"; bg = Theme.SurfaceContainerHigh; fg = Theme.OnSurfaceVariant; break;
             case Look.Unknown: Theme.Text(g, "Unknown", Theme.Small, cell, Theme.Outline); return;
+            case Look.NoWindow: Theme.Text(g, "No window", Theme.Small, cell, Theme.Outline); return;
             default: Theme.Text(g, "Not running", Theme.Small, cell, Theme.OutlineVariant); return;
         }
         DrawChip(g, label, bg, fg, cell);
@@ -1393,6 +1397,7 @@ class MainForm : Form
             var lm = Compat.ReadAll(RegistryHive.LocalMachine);
             var cu = Compat.ReadAll(RegistryHive.CurrentUser);
 
+            var owners = Program.Demo ? null : DpiInfo.WindowOwners();
             var paths = new HashSet<string>(running.Keys, StringComparer.OrdinalIgnoreCase);
             foreach (var kv in lm) if (Compat.ModeOf(kv.Value) != "Not set") paths.Add(kv.Key);
             foreach (var kv in cu) if (Compat.ModeOf(kv.Value) != "Not set") paths.Add(kv.Key);
@@ -1404,6 +1409,8 @@ class MainForm : Form
                 List<int> pids;
                 lm.TryGetValue(p, out a); cu.TryGetValue(p, out c);
                 if (!running.TryGetValue(p, out pids)) pids = new List<int>();
+                // judge how it looks by the instances that show a window
+                var windowed = owners == null ? pids : pids.Where(owners.Contains).ToList();
                 return new Entry
                 {
                     Path = p,
@@ -1412,7 +1419,9 @@ class MainForm : Form
                     AllUsers = Compat.ModeOf(a),
                     CurrentUser = Compat.ModeOf(c),
                     Pids = pids,
-                    Rendering = pids.Count == 0 ? Awareness.Unknown : Program.Demo ? DemoAwareness(p) : DpiInfo.Best(pids),
+                    Rendering = pids.Count == 0 ? Awareness.Unknown : Program.Demo ? DemoAwareness(p)
+                              : DpiInfo.Best(windowed.Count > 0 ? windowed : pids),
+                    HasWindow = windowed.Count > 0,
                     System = p.StartsWith(winDir, StringComparison.OrdinalIgnoreCase),
                 };
             }).ToList();
@@ -1488,7 +1497,7 @@ class MainForm : Form
             Group grp;
             if (!groups.TryGetValue(root, out grp))
             {
-                grp = new Group { Root = root, Name = Grouping.NameOf(root) };
+                grp = new Group { Root = root, Name = Grouping.GroupName(root) };
                 groups[root] = grp;
                 tops.Add(new Row { Group = grp });
             }

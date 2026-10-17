@@ -92,6 +92,31 @@ static class DpiInfo
         return best;
     }
 
+    // Processes that show a visible top-level window
+    delegate bool WindowEnumProc(IntPtr hWnd, IntPtr data);
+    [DllImport("user32.dll")]
+    static extern bool EnumWindows(WindowEnumProc proc, IntPtr data);
+    [DllImport("user32.dll")]
+    static extern bool IsWindowVisible(IntPtr hWnd);
+    [DllImport("user32.dll")]
+    static extern uint GetWindowThreadProcessId(IntPtr hWnd, out int pid);
+
+    public static HashSet<int> WindowOwners()
+    {
+        var set = new HashSet<int>();
+        try
+        {
+            EnumWindows((w, d) =>
+            {
+                int pid;
+                if (IsWindowVisible(w) && GetWindowThreadProcessId(w, out pid) != 0) set.Add(pid);
+                return true;
+            }, IntPtr.Zero);
+        }
+        catch { }
+        return set;
+    }
+
     // DPI of every connected monitor (96 = 100 %). This process is only system aware, which makes Windows report
     // the main display's DPI for every monitor, so the thread switches to per-monitor awareness while it asks.
     public static List<int> MonitorDpis()

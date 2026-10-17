@@ -299,6 +299,62 @@ static class Grouping
 
     public static int Depth(string path) { return Segments(path).Count; }
 
+    // Folder names that say nothing about the program they hold
+    static readonly HashSet<string> Generic = new HashSet<string>(new[] {
+        "bin", "bin32", "bin64", "app", "apps", "application", "x64", "x86", "x86_64", "amd64", "arm64", "win32", "win64",
+        "client", "platform", "current", "program", "programs", "release", "runtime", "ux", "scripts", "cache", "archive" },
+        StringComparer.OrdinalIgnoreCase);
+
+    // Generated ids rather than names: "20054CA46072C", "f0584be0fbaf", "A4RDcrnTH6hbii9a"
+    static bool IsId(string s)
+    {
+        if (s.Length < 8 || !s.Any(char.IsDigit)) return false;
+        if (s.All(Uri.IsHexDigit)) return true;
+        return s.Length >= 12 && s.Any(char.IsUpper) && s.Any(char.IsLower) && s.All(ch => char.IsLetterOrDigit(ch) || ch == '-' || ch == '_');
+    }
+
+    // "132.0.0.0", "4.18.26090.9-0", "v2.1"
+    static bool IsVersion(string s)
+    {
+        if (s.Length > 1 && (s[0] == 'v' || s[0] == 'V')) s = s.Substring(1);
+        return s.Length > 0 && char.IsDigit(s[0]) && s.All(ch => char.IsDigit(ch) || ch == '.' || ch == '-' || ch == '_');
+    }
+
+    // A folder name without a version suffix ("app-1.0.9262" -> "app"); for a Store package folder
+    // ("KDEe.V.KDEConnect_26.801.0_x64__7vt06qxq7ptv8", "eMClient.20054CA46072C_11.0_x64__veq4") just the app's
+    // name ("KDEConnect", "eMClient")
+    static string CleanName(string seg, bool package)
+    {
+        if (package)
+        {
+            int u = seg.IndexOf('_');
+            if (u > 0) seg = seg.Substring(0, u);
+            var parts = seg.Split('.').Where(x => x.Length > 0 && !IsId(x)).ToList();
+            if (parts.Count > 0) seg = parts[parts.Count - 1];
+        }
+        int cut = seg.LastIndexOfAny(new[] { '-', ' ' });
+        if (cut > 0 && IsVersion(seg.Substring(cut + 1))) seg = seg.Substring(0, cut);
+        return seg.Trim();
+    }
+
+    // Name shown for a group: the nearest folder of its root that names the program, skipping version and
+    // generic folders, e.g. "...\Discord\app-1.0.9262" -> "Discord", "...\Drive File Stream\132.0.0.0" -> "Drive File Stream"
+    public static string GroupName(string root)
+    {
+        root = Norm(root);
+        var segs = Segments(root);
+        var names = segs.Select(s => root.Substring(s[0], s[1] - s[0])).ToArray();
+        int c = ContainerDepth(names, names.Length);
+        for (int k = names.Length - 1; k >= Math.Max(1, c); k--)
+        {
+            bool package = string.Equals(names[k - 1], "WindowsApps", StringComparison.OrdinalIgnoreCase) ||
+                           string.Equals(names[k - 1], "SystemApps", StringComparison.OrdinalIgnoreCase);
+            string n = CleanName(names[k], package);
+            if (n.Length > 0 && !IsVersion(n) && !IsId(n) && !Generic.Contains(n)) return n;
+        }
+        return NameOf(root);
+    }
+
     // Last folder name of a group root, e.g. "League of Legends"
     public static string NameOf(string root)
     {
@@ -389,6 +445,29 @@ static class Grouping
         bool nm = NameOf(@"C:\Riot Games\League of Legends") == "League of Legends" && NameOf(@"\\nas\games") == @"\\nas\games";
         if (!nm) fail++;
         Console.WriteLine((nm ? "OK   " : "FAIL ") + "group names");
+        var names = new[] {
+            new[] { @"C:\Program Files\Google\Drive File Stream\132.0.0.0", "Drive File Stream" },
+            new[] { @"C:\ProgramData\Microsoft\Windows Defender\Platform\4.18.26090.9-0", "Windows Defender" },
+            new[] { @"C:\Users\tobi\AppData\Local\Discord\app-1.0.9262", "Discord" },
+            new[] { @"C:\Users\tobi\AppData\Local\hermes\bin", "hermes" },
+            new[] { @"C:\Program Files\WindowsApps\KDEe.V.KDEConnect_26.801.6731.0_x64__7vt06qxq7ptv8\bin", "KDEConnect" },
+            new[] { @"C:\Program Files\WindowsApps\Claude_2.42304.0.0_x64__pzs8sxrjxfjjc\app", "Claude" },
+            new[] { @"C:\Program Files\WindowsApps\eMClient.20054CA46072C_11.0.1201.0_x64__veq4nz3ze5v72", "eMClient" },
+            new[] { @"C:\Program Files\WindowsApps\5319275A.WhatsAppDesktop_2.2640.100.0_x64__cv1g1gvanyjgm", "WhatsAppDesktop" },
+            new[] { @"C:\Users\tobi\AppData\Local\uv\cache\archive-v0\A4RDcrnTH6hbii9a\Scripts", "uv" },
+            new[] { @"C:\Riot Games\League of Legends", "League of Legends" },
+            new[] { @"C:\Program Files (x86)\Steam\", "Steam" },
+            new[] { @"D:\Mods\x\y", "y" },
+            new[] { @"D:\bin", "bin" },
+            new[] { @"\\nas\games", @"\\nas\games" },
+        };
+        foreach (var c in names)
+        {
+            string got = GroupName(c[0]);
+            bool ok = got == c[1];
+            if (!ok) fail++;
+            Console.WriteLine((ok ? "OK   " : "FAIL ") + "name [" + c[0] + "] -> [" + got + "]");
+        }
         return fail;
     }
 }
@@ -399,6 +478,7 @@ class Entry
     public bool System;
     public List<int> Pids = new List<int>();
     public Awareness Rendering = Awareness.Unknown;
+    public bool HasWindow;   // one of its processes shows a window (background helpers can't look blurry)
     public bool Running { get { return Pids.Count > 0; } }
 }
 
