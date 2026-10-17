@@ -140,6 +140,88 @@ static class Compat
     }
 }
 
+// "DPI scaling…" in Explorer's right-click menu for programs and shortcuts, for all users. It runs
+// DpiOverride.exe "<file>", which adds and selects the file. (On Windows 11 it's under "Show more options": only
+// packaged apps can add to the new compact menu.)
+static class ExplorerMenu
+{
+    const string Verb = "DpiOverride";
+    static readonly string[] FileClasses = { "exefile", "lnkfile" };
+
+    static RegistryKey Classes(bool write)
+    {
+        var b = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+        return write ? b.CreateSubKey(@"SOFTWARE\Classes") : b.OpenSubKey(@"SOFTWARE\Classes");
+    }
+
+    public static string Command(string exe) { return "\"" + exe + "\" \"%1\""; }
+
+    // The program in a command line like "C:\x\DpiOverride.exe" "%1"
+    public static string ExeOf(string command)
+    {
+        if (string.IsNullOrEmpty(command)) return null;
+        string s = command.Trim();
+        if (s.StartsWith("\"")) { int end = s.IndexOf('"', 1); return end > 1 ? s.Substring(1, end - 1) : null; }
+        int sp = s.IndexOf(' ');
+        return sp < 0 ? s : s.Substring(0, sp);
+    }
+
+    // The program the entry runs, or null when it isn't there
+    public static string Registered() { using (var c = Classes(false)) return Registered(c); }
+
+    internal static string Registered(RegistryKey classes)
+    {
+        if (classes == null) return null;
+        using (var k = classes.OpenSubKey(FileClasses[0] + @"\shell\" + Verb + @"\command"))
+            return k == null ? null : ExeOf(Convert.ToString(k.GetValue("")));
+    }
+
+    public static void Register(string exe) { using (var c = Classes(true)) Register(c, exe); }
+
+    internal static void Register(RegistryKey classes, string exe)
+    {
+        foreach (var cls in FileClasses)
+        {
+            using (var k = classes.CreateSubKey(cls + @"\shell\" + Verb))
+            {
+                k.SetValue("", "DPI scaling\u2026");
+                k.SetValue("Icon", "\"" + exe + "\",0");
+                using (var cmd = k.CreateSubKey("command")) cmd.SetValue("", Command(exe));
+            }
+        }
+    }
+
+    public static void Unregister() { using (var c = Classes(true)) Unregister(c); }
+
+    internal static void Unregister(RegistryKey classes)
+    {
+        foreach (var cls in FileClasses)
+            using (var shell = classes.OpenSubKey(cls + @"\shell", true))
+                if (shell != null) shell.DeleteSubKeyTree(Verb, false);
+    }
+
+    // After the program was moved, points the entry at its new place
+    public static void KeepCurrent(string exe)
+    {
+        try
+        {
+            string now = Registered();
+            if (now == null || string.Equals(now, exe, StringComparison.OrdinalIgnoreCase)) return;
+            Register(exe);
+            Program.Log("Explorer entry moved from " + now + " to " + exe);
+        }
+        catch (Exception ex) { Program.Log("couldn't update the Explorer entry: " + ex.Message); }
+    }
+
+    public static int SelfTest()
+    {
+        string exe = @"C:\Program Files\DPI Override\DpiOverride.exe";
+        bool ok = ExeOf(Command(exe)) == exe && ExeOf(@"C:\Tools\x.exe ""%1""") == @"C:\Tools\x.exe" && ExeOf("") == null;
+        Console.WriteLine((ok ? "OK   " : "FAIL ") + "Explorer command line");
+        return ok ? 0 : 1;
+    }
+}
+
 // One registry change that can be undone: the exact values before and after
 class UndoStep
 {
@@ -696,7 +778,7 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
-        if (args.Length > 0 && args[0] == "--selftest") return Compat.SelfTest() + Grouping.SelfTest() + Backup.SelfTest();
+        if (args.Length > 0 && args[0] == "--selftest") return Compat.SelfTest() + Grouping.SelfTest() + Backup.SelfTest() + ExplorerMenu.SelfTest();
         Demo = args.Contains("--demo");
         // full paths, because the elevated copy starts in System32
         StartPaths = args.Where(a => !a.StartsWith("--")).Select(a => { try { return System.IO.Path.GetFullPath(a); } catch { return a; } }).ToList();

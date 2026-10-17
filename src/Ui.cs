@@ -848,15 +848,20 @@ class MainForm : Form
         undoItem.ShortcutKeyDisplayString = "Ctrl+Z";   // display only: OnKeyDown handles the key
         undoItem.ShowShortcutKeys = true;
         moreMenu.AddSeparator();
+        moreMenu.Add("Back up overrides…", Theme.GSave, BackUp);
+        moreMenu.Add("Restore from backup…", Theme.GOpenFile, Restore);
+        var explorerSep = moreMenu.AddSeparator();
+        var explorerItem = moreMenu.Add("", Theme.GOpenFolder, ToggleExplorerMenu);
         btnMore.Click += (s, e) =>
         {
             // before Show, so the menu is sized and placed for the new text
             undoItem.Enabled = undo.Count > 0;
             undoItem.Text = undo.Count > 0 ? "Undo: " + Shorten(undo[undo.Count - 1].Label, 48) : "Nothing to undo";
+            bool onWindows = Environment.OSVersion.Platform == PlatformID.Win32NT;
+            explorerItem.Visible = explorerSep.Visible = onWindows;
+            if (onWindows) explorerItem.Text = ExplorerEntryOn() ? "Remove “DPI scaling…” from Explorer" : "Add “DPI scaling…” to Explorer";
             moreMenu.Show(btnMore, new Point(btnMore.Width, btnMore.Height + Dp(4)), ToolStripDropDownDirection.BelowLeft);
         };
-        moreMenu.Add("Back up overrides…", Theme.GSave, BackUp);
-        moreMenu.Add("Restore from backup…", Theme.GOpenFile, Restore);
         appBar.Controls.Add(btnMore);
         appBar.Resize += (s, e) =>
         {
@@ -972,6 +977,7 @@ class MainForm : Form
         if (Environment.OSVersion.Platform != PlatformID.Win32NT) { EnableOleDrop(this); EnableOleDrop(list); }
         Shown += (s, e) =>
         {
+            if (Environment.OSVersion.Platform == PlatformID.Win32NT && !Program.Demo) ExplorerMenu.KeepCurrent(Application.ExecutablePath);
             Reload();
             list.Focus();
             if (Program.StartPaths.Count > 0) AddPaths(Program.StartPaths);
@@ -1854,6 +1860,31 @@ class MainForm : Form
         });
         worker.IsBackground = true;
         worker.Start();
+    }
+
+    // ---------- Explorer's right-click menu ----------
+    static bool ExplorerEntryOn()
+    {
+        try { return ExplorerMenu.Registered() != null; }
+        catch { return false; }
+    }
+
+    void ToggleExplorerMenu()
+    {
+        bool on = ExplorerEntryOn();
+        try
+        {
+            if (on) ExplorerMenu.Unregister();
+            else ExplorerMenu.Register(Application.ExecutablePath);
+            Program.Log((on ? "removed" : "added") + " the Explorer entry");
+            ShowSnack(on ? "Removed “DPI scaling…” from Explorer"
+                         : "Right-click a program or shortcut in Explorer and choose “DPI scaling…” (on Windows 11 under Show more options)", false);
+        }
+        catch (Exception ex)
+        {
+            Program.Log("Explorer entry change failed: " + ex);
+            ShowSnack("Couldn't change the Explorer menu: " + ex.Message, true);
+        }
     }
 
     // ---------- Back up and restore ----------

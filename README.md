@@ -54,6 +54,11 @@ The output is `bin/DpiOverride.exe`.
 `DpiOverride.exe --demo` shows fake running programs (used to test the UI under Mono on Linux).
 `DpiOverride.exe "<program.exe, shortcut or folder>"` opens with that program, or every program in that folder, added and selected.
 
+**Explorer entry:** ⋯ → *Add "DPI scaling…" to Explorer* adds that item to the right-click menu of every program
+and shortcut, for all users. It opens DPI Override with that program added and selected. On Windows 11 it's under
+*Show more options* (only packaged apps can add to the new compact menu). The entry follows the tool if its
+.exe is moved, and the same menu item removes it again.
+
 **Undo:** every change (Apply, Off, Remove override, Restore from backup) can be undone with UNDO in the
 message that follows it, Ctrl+Z, or ⋯ → Undo. It puts back the exact previous values, other compatibility flags
 included, for the last 20 changes while the app is open.
