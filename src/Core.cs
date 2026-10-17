@@ -468,6 +468,7 @@ static class Program
             {
                 Log("not admin, relaunching elevated");
                 string args = string.Join(" ", StartPaths.Select(a => "\"" + a + (a.EndsWith("\\", StringComparison.Ordinal) ? "\\" : "") + "\""));
+                if (Demo) args = "--demo " + args;
                 Process.Start(new ProcessStartInfo(Application.ExecutablePath, args) { Verb = "runas", UseShellExecute = true });
             }
             catch (Exception ex)

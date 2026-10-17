@@ -41,6 +41,8 @@ static class DpiInfo
     static extern bool EnumDisplayMonitors(IntPtr hdc, IntPtr clip, MonitorEnumProc proc, IntPtr data);
     [DllImport("shcore.dll")]
     static extern int GetDpiForMonitor(IntPtr hMon, int type, out uint dpiX, out uint dpiY);
+    [DllImport("user32.dll")]
+    static extern IntPtr SetThreadDpiAwarenessContext(IntPtr ctx);                  // Windows 10 1607+
 
     static bool? newApi;
 
@@ -90,10 +92,14 @@ static class DpiInfo
         return best;
     }
 
-    // DPI of every connected monitor (96 = 100 %)
+    // DPI of every connected monitor (96 = 100 %). This process is only system aware, which makes Windows report
+    // the main display's DPI for every monitor, so the thread switches to per-monitor awareness while it asks.
     public static List<int> MonitorDpis()
     {
         var list = new List<int>();
+        IntPtr old = IntPtr.Zero;
+        try { old = SetThreadDpiAwarenessContext((IntPtr)(-4) /* PER_MONITOR_AWARE_V2 */); }
+        catch (EntryPointNotFoundException) { }
         try
         {
             EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, (m, hdc, r, d) =>
@@ -104,6 +110,7 @@ static class DpiInfo
             }, IntPtr.Zero);
         }
         catch { }
+        finally { if (old != IntPtr.Zero) SetThreadDpiAwarenessContext(old); }
         return list;
     }
 }
@@ -233,6 +240,20 @@ static class Restarter
         finally { Marshal.FreeHGlobal(buf); CloseHandle(h); }
     }
 
+    // The instance whose command line restarts the program: one that wasn't started by another instance
+    // (helpers like "--type=renderer" are), preferring one with a window
+    internal static int MainOf(List<int> pids)
+    {
+        var roots = pids.Where(pid => !pids.Contains(ParentOf(pid))).ToList();
+        if (roots.Count == 0) roots = pids;
+        foreach (var pid in roots)
+        {
+            try { using (var p = Process.GetProcessById(pid)) if (p.MainWindowHandle != IntPtr.Zero) return pid; }
+            catch { }
+        }
+        return roots[0];
+    }
+
     public class Job
     {
         public string Exe, Display;
@@ -251,13 +272,7 @@ static class Restarter
         jobs = jobs.Where(j => j.Pids.Count > 0).ToList();
         foreach (var j in jobs)
         {
-            // Remember how the main instance was started: prefer one with a window
-            j.Main = j.Pids[0];
-            foreach (var pid in j.Pids)
-            {
-                try { using (var p = Process.GetProcessById(pid)) if (p.MainWindowHandle != IntPtr.Zero) { j.Main = pid; break; } }
-                catch { }
-            }
+            j.Main = MainOf(j.Pids);
             j.Args = ArgumentsOf(CommandLineOf(j.Main));
             j.Elevated = IsElevated(j.Main);
             j.Parent = ParentOf(j.Main);
