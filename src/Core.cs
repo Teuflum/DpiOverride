@@ -140,19 +140,29 @@ static class Compat
     }
 }
 
-// "DPI scaling…" in Explorer's right-click menu for programs and shortcuts, for all users. It runs
-// DpiOverride.exe "<file>", which adds and selects the file. (On Windows 11 it's under "Show more options": only
-// packaged apps can add to the new compact menu.)
+// "DPI scaling…" in Explorer's right-click menu for programs and shortcuts, for the current user (no admin rights
+// needed). It runs DpiOverride.exe "<file>", which adds and selects the file. (On Windows 11 it's under "Show more
+// options": only packaged apps can add to the new compact menu.) Versions that ran as admin registered it for all
+// users; that entry is still recognized and removed with admin rights.
 static class ExplorerMenu
 {
     const string Verb = "DpiOverride";
     static readonly string[] FileClasses = { "exefile", "lnkfile" };
 
-    static RegistryKey Classes(bool write)
+    static RegistryKey Classes(bool write, RegistryHive hive = RegistryHive.CurrentUser)
     {
-        var b = RegistryKey.OpenBaseKey(RegistryHive.LocalMachine, RegistryView.Registry64);
+        var b = RegistryKey.OpenBaseKey(hive, RegistryView.Registry64);
         return write ? b.CreateSubKey(@"SOFTWARE\Classes") : b.OpenSubKey(@"SOFTWARE\Classes");
     }
+
+    // The old all-users entry is there
+    public static bool AllUsersRegistered()
+    {
+        try { using (var c = Classes(false, RegistryHive.LocalMachine)) return Registered(c) != null; }
+        catch { return false; }
+    }
+
+    public static void UnregisterAllUsers() { using (var c = Classes(true, RegistryHive.LocalMachine)) Unregister(c); }
 
     public static string Command(string exe) { return "\"" + exe + "\" \"%1\""; }
 
@@ -166,7 +176,7 @@ static class ExplorerMenu
         return sp < 0 ? s : s.Substring(0, sp);
     }
 
-    // The program the entry runs, or null when it isn't there
+    // The program the current user's entry runs, or null when it isn't there
     public static string Registered() { using (var c = Classes(false)) return Registered(c); }
 
     internal static string Registered(RegistryKey classes)
@@ -252,11 +262,19 @@ class UndoStep
         return Changes.Count > 0;
     }
 
-    // Puts every value back; returns the errors
-    public List<string> Revert()
+    // The all-users part of undoing this, as DPI modes for AllUsers.Set (which only rewrites the DPI flags, and the
+    // change only touched those, so the other flags stay as they were)
+    public List<KeyValuePair<string, string>> AllUsersRevert()
+    {
+        return Changes.Where(c => c.Hive == RegistryHive.LocalMachine)
+                      .Select(c => new KeyValuePair<string, string>(c.Exe, Compat.ModeOf(c.Before))).ToList();
+    }
+
+    // Puts the current user's values back exactly; returns the errors
+    public List<string> RevertCurrentUser()
     {
         var errors = new List<string>();
-        foreach (var c in Changes)
+        foreach (var c in Changes.Where(c => c.Hive == RegistryHive.CurrentUser))
         {
             try { Compat.SetRaw(c.Hive, c.Exe, c.Before); }
             catch (Exception ex) { errors.Add(Grouping.FileName(c.Exe) + ": " + ex.Message); }
@@ -749,12 +767,160 @@ class Group
     public int RunningCount { get { return Members.Count(m => m.Running); } }
 }
 
+// Changes to the all-users settings (HKLM) need admin rights, but the app runs as the normal user. Each change runs
+// a short-lived elevated copy ("--elevated-set <file>": one UAC prompt) that only sets DPI modes with Compat.Set,
+// so whatever it's given, it can't write anything else. When the app already runs as admin it writes directly.
+static class AllUsers
+{
+    public const string HelperArg = "--elevated-set";
+    const string FilePrefix = "DpiOverride-request-";
+
+    public class Result
+    {
+        public bool Cancelled;                            // the UAC prompt was declined: nothing changed
+        public List<string> Errors = new List<string>();
+    }
+
+    // ops: program path -> mode ("Application", ..., "Not set"); removeExplorerEntry: the old all-users Explorer entry
+    public static Result Set(IList<KeyValuePair<string, string>> ops, bool removeExplorerEntry, IntPtr owner)
+    {
+        var res = new Result();
+        if (ops.Count == 0 && !removeExplorerEntry) return res;
+        if (Program.IsAdmin() || Environment.OSVersion.Platform != PlatformID.Win32NT)   // Mono: no UAC
+        {
+            Write(ops, removeExplorerEntry, res.Errors);
+            return res;
+        }
+
+        string file = Path.Combine(Path.GetTempPath(), FilePrefix + Guid.NewGuid().ToString("N") + ".txt");
+        try
+        {
+            var lines = ops.Select(o => "set\t" + o.Value + "\t" + o.Key).ToList();
+            if (removeExplorerEntry) lines.Add("explorer-remove");
+            File.WriteAllLines(file, lines, Encoding.UTF8);
+            Process p;
+            try
+            {
+                p = Process.Start(new ProcessStartInfo(Application.ExecutablePath, HelperArg + " \"" + file + "\"")
+                    { Verb = "runas", UseShellExecute = true, ErrorDialogParentHandle = owner });   // owner: the prompt comes to the front
+            }
+            catch (System.ComponentModel.Win32Exception ex)
+            {
+                if (ex.NativeErrorCode != 1223 /* ERROR_CANCELLED */) throw;
+                Program.Log("UAC prompt declined, " + ops.Count + " all-users change(s) not made");
+                res.Cancelled = true;
+                return res;
+            }
+            using (p)
+            {
+                p.WaitForExit();
+                string result = file + ".result";
+                if (File.Exists(result)) res.Errors.AddRange(File.ReadAllLines(result).Where(l => l.Length > 0));
+                else if (p.ExitCode != 0) res.Errors.Add("the administrator helper failed (exit code " + p.ExitCode + ")");
+            }
+        }
+        catch (Exception ex)
+        {
+            Program.Log("all-users change failed: " + ex);
+            res.Errors.Add(ex.Message);
+        }
+        finally
+        {
+            try { File.Delete(file); } catch { }
+            try { File.Delete(file + ".result"); } catch { }
+        }
+        return res;
+    }
+
+    static void Write(IEnumerable<KeyValuePair<string, string>> ops, bool removeExplorerEntry, List<string> errors)
+    {
+        foreach (var o in ops)
+        {
+            try
+            {
+                Compat.Set(RegistryHive.LocalMachine, o.Key, o.Value);
+                Program.Log("set " + o.Value + " for " + o.Key);
+            }
+            catch (Exception ex)
+            {
+                errors.Add(Grouping.FileName(o.Key) + ": " + ex.Message);
+                Program.Log("set failed for " + o.Key + ": " + ex);
+            }
+        }
+        if (removeExplorerEntry)
+        {
+            try { ExplorerMenu.UnregisterAllUsers(); Program.Log("removed the old all-users Explorer entry"); }
+            catch (Exception ex) { errors.Add("Explorer entry: " + ex.Message); }
+        }
+    }
+
+    internal static bool IsRequest(string line, out string mode, out string exe)
+    {
+        mode = exe = null;
+        var parts = line.Split('\t');
+        if (parts.Length != 3 || parts[0] != "set" || !Compat.Modes.Contains(parts[1])) return false;
+        string p = parts[2];
+        if (p.Length == 0 || p.Length > 1024 || p.IndexOfAny(Path.GetInvalidPathChars()) >= 0) return false;
+        try { if (!Path.IsPathRooted(p)) return false; } catch { return false; }
+        mode = parts[1]; exe = p;
+        return true;
+    }
+
+    // The elevated copy: checks the requests, writes them, and reports errors in <file>.result
+    public static int RunHelper(string file)
+    {
+        var errors = new List<string>();
+        string tempDir = Path.GetFullPath(Path.GetTempPath()).TrimEnd(new[] { '\\' });
+        string full;
+        try { full = Path.GetFullPath(file); } catch { return 2; }
+        // only request files this app writes, so the result file can't be put anywhere else
+        if (!string.Equals(Path.GetDirectoryName(full), tempDir, StringComparison.OrdinalIgnoreCase) ||
+            !Path.GetFileName(full).StartsWith(FilePrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            Program.Log("helper: refused request file " + full);
+            return 2;
+        }
+        if (!Program.IsAdmin()) errors.Add("the helper didn't get administrator rights");
+        else
+        {
+            var ops = new List<KeyValuePair<string, string>>();
+            bool explorer = false;
+            foreach (var line in File.ReadAllLines(full))
+            {
+                if (line.Length == 0) continue;
+                string mode, exe;
+                if (line == "explorer-remove") explorer = true;
+                else if (IsRequest(line, out mode, out exe)) ops.Add(new KeyValuePair<string, string>(exe, mode));
+                else errors.Add("ignored an invalid request");
+            }
+            Program.Log("helper: " + ops.Count + " all-users change(s)" + (explorer ? " and the Explorer entry" : ""));
+            Write(ops, explorer, errors);
+        }
+        try { File.WriteAllLines(full + ".result", errors); } catch { }
+        return errors.Count;
+    }
+
+    public static int SelfTest()
+    {
+        string m, e;
+        bool ok = IsRequest("set\tApplication\tC:\\Games\\a b.exe", out m, out e) && m == "Application" && e == "C:\\Games\\a b.exe"
+               && IsRequest("set\tNot set\t\\\\nas\\x.exe", out m, out e)
+               && !IsRequest("set\tRUNASADMIN\tC:\\a.exe", out m, out e)       // only the four modes
+               && !IsRequest("set\tSystem\trelative.exe", out m, out e)
+               && !IsRequest("raw\tSystem\tC:\\a.exe", out m, out e)
+               && !IsRequest("set\tSystem\tC:\\a.exe\textra", out m, out e);
+        Console.WriteLine((ok ? "OK   " : "FAIL ") + "all-users helper requests");
+        return ok ? 0 : 1;
+    }
+}
+
 static class Program
 {
     [DllImport("user32.dll")]
     static extern bool SetProcessDPIAware();
 
-    static bool IsAdmin()
+    // Running elevated (with UAC's split token the Administrators group only counts once elevated)
+    public static bool IsAdmin()
     {
         var id = System.Security.Principal.WindowsIdentity.GetCurrent();
         return new System.Security.Principal.WindowsPrincipal(id).IsInRole(System.Security.Principal.WindowsBuiltInRole.Administrator);
@@ -769,6 +935,26 @@ static class Program
     }
     static bool IsAdminSafe() { try { return IsAdmin(); } catch { return false; } }
 
+    // Next to the .exe, or in %LOCALAPPDATA%\DpiOverride when that folder isn't writable without admin rights
+    // (e.g. Program Files, now that the app runs as the normal user)
+    static string PickLogPath()
+    {
+        try
+        {
+            string p = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Application.ExecutablePath), "DpiOverride.log");
+            using (new FileStream(p, FileMode.Append, FileAccess.Write, FileShare.ReadWrite)) { }
+            return p;
+        }
+        catch { }
+        try
+        {
+            string dir = System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DpiOverride");
+            Directory.CreateDirectory(dir);
+            return System.IO.Path.Combine(dir, "DpiOverride.log");
+        }
+        catch { return System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DpiOverride.log"); }
+    }
+
     static void Crash(Exception ex)
     {
         Log("CRASH: " + ex);
@@ -778,12 +964,12 @@ static class Program
     [STAThread]
     static int Main(string[] args)
     {
-        if (args.Length > 0 && args[0] == "--selftest") return Compat.SelfTest() + Grouping.SelfTest() + Backup.SelfTest() + ExplorerMenu.SelfTest();
+        if (args.Length > 0 && args[0] == "--selftest") return Compat.SelfTest() + Grouping.SelfTest() + Backup.SelfTest() + ExplorerMenu.SelfTest() + AllUsers.SelfTest();
         Demo = args.Contains("--demo");
         // full paths, because the elevated copy starts in System32
         StartPaths = args.Where(a => !a.StartsWith("--")).Select(a => { try { return System.IO.Path.GetFullPath(a); } catch { return a; } }).ToList();
-        try { LogPath = System.IO.Path.Combine(System.IO.Path.GetDirectoryName(Application.ExecutablePath), "DpiOverride.log"); }
-        catch { LogPath = System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DpiOverride.log"); }
+        LogPath = PickLogPath();
+        if (args.Length == 2 && args[0] == AllUsers.HelperArg) return AllUsers.RunHelper(args[1]);   // the elevated helper
         Application.EnableVisualStyles();
         Application.SetCompatibleTextRenderingDefault(false);
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
@@ -798,31 +984,14 @@ static class Program
     {
         bool onWindows = Environment.OSVersion.Platform == PlatformID.Win32NT;
 
-        // Already open: hand the paths to that window (no second window, no second UAC prompt)
+        // Already open: hand the paths to that window (no second window)
         if (onWindows && !Demo && SingleInstance.Send(StartPaths))
         {
             Log("handed " + StartPaths.Count + " path(s) to the open window");
             return 0;
         }
 
-        // Writing the all-users setting needs admin rights: relaunch elevated (UAC prompt)
-        if (onWindows && !IsAdmin())
-        {
-            try
-            {
-                Log("not admin, relaunching elevated");
-                string args = string.Join(" ", StartPaths.Select(a => "\"" + a + (a.EndsWith("\\", StringComparison.Ordinal) ? "\\" : "") + "\""));
-                if (Demo) args = "--demo " + args;
-                Process.Start(new ProcessStartInfo(Application.ExecutablePath, args) { Verb = "runas", UseShellExecute = true });
-            }
-            catch (Exception ex)
-            {
-                Log("elevation failed: " + ex.Message);
-                MessageBox.Show("Administrator rights are needed to change the setting for all users.",
-                                "DPI Override", MessageBoxButtons.OK, MessageBoxIcon.Warning);
-            }
-            return 0;
-        }
+        // The app runs as the normal user; only changes for all users ask for admin rights (AllUsers.Set)
         if (onWindows) { try { SetProcessDPIAware(); } catch { } }
         Log("creating window");
         var form = new MainForm();

@@ -1,7 +1,7 @@
 # DPI Override
 
 A small Windows tool for setting the **"Override high DPI scaling behavior"** compatibility
-option for programs, for **all users**, without clicking through each program's
+option for programs, for **all users** or only for yourself, without clicking through each program's
 Properties → Compatibility dialog.
 
 - Lists running programs plus every program that already has a DPI override
@@ -20,9 +20,18 @@ Properties → Compatibility dialog.
 - **Whole folders:** *Add → All programs in a folder…* adds every .exe in a folder and its
   subfolders as one group, ready to apply. With a program selected, the menu also offers its folder
 
-The setting is stored in
-`HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers`
-(value name = full .exe path, e.g. `~ HIGHDPIAWARE`), so the tool asks for admin rights.
+The setting is stored in `SOFTWARE\Microsoft\Windows NT\CurrentVersion\AppCompatFlags\Layers` (value name = full
+.exe path, e.g. `~ HIGHDPIAWARE`): under `HKLM` for all users, under `HKCU` for the current user.
+
+**No UAC prompt at start:** the tool runs as the normal user. The **All users / Only me** button next to the modes
+chooses who *Apply* is for. *Only me* writes `HKCU` directly. *All users* shows the shield on *Apply* and asks for
+administrator rights once per change: a short-lived elevated copy (`DpiOverride.exe --elevated-set <request file>`)
+writes `HKLM` and exits. It only accepts "set this DPI mode for these programs" and only changes the DPI flags. Undo,
+Remove override and Restore from backup work the same way when they touch all-users settings. The choice is remembered.
+
+When a program has both, Windows uses the all-users setting (its Compatibility tab greys out the other one), so a
+current-user value next to an all-users one is shown muted. *All users* also clears your own value, like Windows does.
+Started as administrator, the tool writes everything directly without extra prompts.
 
 ## Requirements
 
@@ -54,13 +63,16 @@ The output is `bin/DpiOverride.exe`.
 `DpiOverride.exe --demo` shows fake running programs (used to test the UI under Mono on Linux).
 `DpiOverride.exe "<program.exe, shortcut or folder>"` opens with that program, or every program in that folder, added and selected.
 When DPI Override is already open, a second launch hands its paths to that window and brings it to the front instead
-of opening another window (and another UAC prompt).
+of opening another window.
+
+The log (`DpiOverride.log`) is written next to the .exe, or to `%LOCALAPPDATA%\DpiOverride` when that folder isn't
+writable without admin rights.
 
 **Dark mode:** follows Windows' app mode (Settings → Personalization → Colors), also when it's switched while the
 tool is open. File dialogs and tooltips are drawn by Windows and keep their own look.
 
 **Explorer entry:** ⋯ → *Add "DPI scaling…" to Explorer* adds that item to the right-click menu of every program
-and shortcut, for all users. It opens DPI Override with that program added and selected. On Windows 11 it's under
+and shortcut, for your user account (no admin rights needed). It opens DPI Override with that program added and selected. On Windows 11 it's under
 *Show more options* (only packaged apps can add to the new compact menu). The entry follows the tool if its
 .exe is moved, and the same menu item removes it again.
 
@@ -74,6 +86,6 @@ DPI override keys from such a file and sets each program's DPI mode as in the ba
 and programs that aren't in the backup, stay as they are.
 
 Programs, shortcuts (.lnk) and folders can also be dropped onto the window. A shortcut to a Squirrel launcher
-(Discord, Slack, …) adds the real program from the newest `app-<version>` folder. Because the tool runs as
-administrator, it accepts drops through `WM_DROPFILES` (Windows blocks normal drag and drop from Explorer into
+(Discord, Slack, …) adds the real program from the newest `app-<version>` folder. Drops arrive as `WM_DROPFILES`,
+which also works when the tool was started as administrator (Windows blocks normal drag and drop from Explorer into
 elevated windows).

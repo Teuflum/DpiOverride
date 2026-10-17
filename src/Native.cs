@@ -320,7 +320,8 @@ static class Restarter
             {
                 bool alive;
                 try { alive = !kv.Value.HasExited; } catch { alive = false; }
-                if (alive && failed.Add(kv.Key)) errors.Add(kv.Key.Display + ": it didn't close");
+                if (alive && failed.Add(kv.Key))
+                    errors.Add(kv.Key.Display + ": it didn't close" + (Program.IsAdmin() ? "" : " (it may run as administrator: close it yourself)"));
             }
         }
         finally { foreach (var kv in procs) kv.Value.Dispose(); }
@@ -330,7 +331,8 @@ static class Restarter
         {
             if (failed.Contains(j)) continue;
             string error = null;
-            if (!j.Elevated && StartUnelevated(j.Exe, j.Args, out error)) continue;
+            // Only an elevated DPI Override has to hand a normal program Explorer's token; otherwise it starts as we are
+            if (!j.Elevated && Program.IsAdmin() && StartUnelevated(j.Exe, j.Args, out error)) continue;
             if (error != null) Program.Log("unelevated start failed (" + error + "), starting directly");
             try { Process.Start(new ProcessStartInfo(j.Exe, j.Args) { UseShellExecute = true, WorkingDirectory = Path.GetDirectoryName(j.Exe) }); }
             catch (Exception ex) { errors.Add(j.Display + ": couldn't start it again: " + ex.Message); }

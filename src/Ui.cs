@@ -110,7 +110,8 @@ static class Theme
     }
 
     public const string GFile = "\uE8A5", GFolder = "\uE8B7", GOpenFolder = "\uE838", GCopy = "\uE8C8", GRemove = "\uE711",
-                        GMore = "\uE712", GSave = "\uE74E", GOpenFile = "\uE8E5", GUndo = "\uE7A7";
+                        GMore = "\uE712", GSave = "\uE74E", GOpenFile = "\uE8E5", GUndo = "\uE7A7",
+                        GPeople = "\uE716", GPerson = "\uE77B", GShield = "\uEA18";
 
     public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall;
     public static bool HasIcons;
@@ -889,6 +890,10 @@ class MainForm : Form
     ToolStripSeparator addHereSep;
     string addHereDir;
     readonly MMenu rowMenu = new MMenu();
+    readonly MButton btnScope = new MButton();
+    readonly MMenu scopeMenu = new MMenu();
+    readonly ToolTip applyTip = new ToolTip();
+    bool allUsersScope = true;   // Apply sets the override for all users (asks for admin rights) or only for the current user
     ToolStripMenuItem rowOpen, rowCopy, rowRestart, rowRemove;
     readonly Dictionary<string, string> descCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, Bitmap> iconCache = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
@@ -1066,7 +1071,14 @@ class MainForm : Form
         btnRestart.Enabled = false;
         btnRestart.Click += (s, e) => RestartSelected();
         new ToolTip().SetToolTip(btnRestart, "Close and reopen the selected running programs so a new setting takes effect");
-        bottom.Controls.AddRange(new Control[] { modes, btnRestart, btnApply });
+        btnScope.Kind = ButtonKind.Text; btnScope.DropDown = true;
+        btnScope.Click += (s, e) => scopeMenu.Show(btnScope, new Point(0, -Dp(4)), ToolStripDropDownDirection.AboveRight);
+        scopeMenu.Add("For all users (asks for administrator rights)", Theme.GPeople, () => SetScope(true));
+        scopeMenu.Add("Only for me (no administrator rights needed)", Theme.GPerson, () => SetScope(false));
+        new ToolTip().SetToolTip(btnScope, "Who the setting is for");
+        allUsersScope = LoadScope();
+        bottom.Controls.AddRange(new Control[] { btnScope, modes, btnRestart, btnApply });
+        UpdateScopeUi();
         bottom.Resize += (s, e) => LayoutBottom();
 
         Controls.Add(content);
@@ -1231,6 +1243,8 @@ class MainForm : Form
         btnRestart.Bounds = new Rectangle(btnApply.Left - Dp(8) - restartW, y, restartW, h);
         int segW = modes.PreferredWidth();
         modes.Bounds = new Rectangle(btnRestart.Left - Dp(24) - segW, y, segW, h);
+        int scopeW = btnScope.PreferredWidth();
+        btnScope.Bounds = new Rectangle(modes.Left - Dp(8) - scopeW, y, scopeW, h);
         bottom.Invalidate();
     }
 
@@ -1319,7 +1333,7 @@ class MainForm : Form
         int n = SelectedEntries().Count;
         string title = n == 0 ? "Select programs in the list" : n == 1 ? "1 program selected" : n + " programs selected";
         string sub = "Scaling performed by: " + ModeDescription() + "  ·  restart afterwards";
-        int x = Dp(28), w = modes.Left - x - Dp(16);
+        int x = Dp(28), w = btnScope.Left - x - Dp(8);
         int mid = bottom.Height / 2;
         Theme.Text(g, title, Theme.BodyStrong, new Rectangle(x, mid - Dp(22), w, Dp(22)), Theme.OnSurface);
         Theme.Text(g, sub, Theme.Small, new Rectangle(x, mid + Dp(1), w, Dp(20)), Theme.OnSurfaceVariant);
@@ -1388,7 +1402,8 @@ class MainForm : Form
 
         DrawModeChip(g, row.IsGroup ? GroupMode(row.Group, true) : en.AllUsers, new Rectangle(x + Dp(8), r.Y, w[1] - Dp(16), r.Height));
         x += w[1];
-        DrawModeChip(g, row.IsGroup ? GroupMode(row.Group, false) : en.CurrentUser, new Rectangle(x + Dp(8), r.Y, w[2] - Dp(16), r.Height));
+        DrawModeChip(g, row.IsGroup ? GroupMode(row.Group, false) : en.CurrentUser, new Rectangle(x + Dp(8), r.Y, w[2] - Dp(16), r.Height),
+                     !row.IsGroup && Ignored(en));
         x += w[2];
 
         DrawLook(g, row.IsGroup ? LookOf(row.Group) : LookOf(en), new Rectangle(x + Dp(8), r.Y, w[3] - Dp(16), r.Height));
@@ -1506,7 +1521,11 @@ class MainForm : Form
             TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.EndEllipsis);
     }
 
-    void DrawModeChip(Graphics g, string mode, Rectangle cell)
+    // The current user's value doesn't count: Windows uses the all-users one (its Compatibility tab greys it out)
+    static bool Ignored(Entry e) { return e.AllUsers != "Not set" && e.CurrentUser != "Not set"; }
+
+    // `ignored`: a value Windows doesn't use, drawn muted
+    void DrawModeChip(Graphics g, string mode, Rectangle cell, bool ignored = false)
     {
         Color bg, fg;
         Theme.ModeColors(mode, out bg, out fg);
@@ -1515,7 +1534,7 @@ class MainForm : Form
             Theme.Text(g, "Not set", Theme.Small, cell, Theme.Outline);
             return;
         }
-        if (mode == "Mixed") { bg = Theme.SurfaceContainerHigh; fg = Theme.OnSurfaceVariant; }
+        if (mode == "Mixed" || ignored) { bg = Theme.SurfaceContainerHigh; fg = ignored ? Theme.Outline : Theme.OnSurfaceVariant; }
         string label = mode == "System (Enhanced)" ? "Enhanced" : mode;
         int h = Dp(26);
         int cw = Math.Min(cell.Width, Theme.Measure(label, Theme.SmallStrong) + Dp(24));
@@ -1834,7 +1853,8 @@ class MainForm : Form
             {
                 var e = row.Entry;
                 it = new ListViewItem(new[] { e.Display, e.AllUsers, e.CurrentUser, LookOf(e).ToString(), e.Path })
-                     { Tag = row, ToolTipText = e.Display + "\n" + LookTip(e) };
+                     { Tag = row, ToolTipText = e.Display + "\n" + LookTip(e) +
+                       (Ignored(e) ? "\nYour own setting (" + e.CurrentUser + ") is ignored: Windows uses the all-users setting." : "") };
             }
             row.Item = it;
             list.Items.Add(it);
@@ -2019,7 +2039,7 @@ class MainForm : Form
     // ---------- Explorer's right-click menu ----------
     static bool ExplorerEntryOn()
     {
-        try { return ExplorerMenu.Registered() != null; }
+        try { return ExplorerMenu.Registered() != null || ExplorerMenu.AllUsersRegistered(); }
         catch { return false; }
     }
 
@@ -2028,7 +2048,16 @@ class MainForm : Form
         bool on = ExplorerEntryOn();
         try
         {
-            if (on) ExplorerMenu.Unregister();
+            if (on)
+            {
+                ExplorerMenu.Unregister();
+                if (ExplorerMenu.AllUsersRegistered())   // from a version that ran as admin: removing it needs admin rights
+                {
+                    var res = AllUsers.Set(new List<KeyValuePair<string, string>>(), true, Handle);
+                    if (res.Cancelled) { ShowSnack("The entry stays: removing it for all users needs administrator rights", true); return; }
+                    if (res.Errors.Count > 0) { ShowSnack("Couldn't remove the Explorer entry: " + res.Errors[0], true); return; }
+                }
+            }
             else ExplorerMenu.Register(Application.ExecutablePath);
             Program.Log((on ? "removed" : "added") + " the Explorer entry");
             ShowSnack(on ? "Removed “DPI scaling…” from Explorer"
@@ -2123,20 +2152,10 @@ class MainForm : Form
 
         var errors = new List<string>();
         var step = UndoStep.Begin("restore from " + Path.GetFileName(file), changes.Select(i => i.Exe));
-        foreach (var i in changes)
-        {
-            string mode = Compat.ModeOf(i.Value);
-            try
-            {
-                Compat.Set(i.AllUsers ? RegistryHive.LocalMachine : RegistryHive.CurrentUser, i.Exe, mode);
-                Program.Log("restored " + mode + (i.AllUsers ? "" : " (current user)") + " for " + i.Exe);
-            }
-            catch (Exception ex)
-            {
-                errors.Add(Grouping.FileName(i.Exe) + ": " + ex.Message);
-                Program.Log("restore failed for " + i.Exe + ": " + ex);
-            }
-        }
+        Program.Log("restoring " + changes.Count + " override(s) from " + file);
+        if (!WriteModes(changes.Where(i => i.AllUsers).Select(i => Op(i.Exe, Compat.ModeOf(i.Value))).ToList(),
+                        changes.Where(i => !i.AllUsers).Select(i => Op(i.Exe, Compat.ModeOf(i.Value))).ToList(), errors))
+            return;
         var kept = Remember(step);
         var paths = changes.Select(i => i.Exe).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
         search.Box.Text = "";
@@ -2204,10 +2223,14 @@ class MainForm : Form
         catch (Exception ex) { ShowSnack("Couldn't copy: " + ex.Message, true); }
     }
 
+    // Removes the override for all users and for the current user, wherever one is set
     void RemoveOverride()
     {
         var items = SelectedEntries().Where(HasOverride).ToList();
-        if (items.Count > 0) Apply("Not set", items);
+        if (items.Count == 0) return;
+        Change(items, "Override removed for " + What(items.Select(i => i.Display).ToList()),
+               items.Where(i => i.AllUsers != "Not set").Select(i => Op(i.Path, "Not set")).ToList(),
+               items.Where(i => i.CurrentUser != "Not set").Select(i => Op(i.Path, "Not set")).ToList());
     }
 
     // ---------- Demo data (for testing the UI under Mono on Linux: --demo) ----------
@@ -2275,8 +2298,17 @@ class MainForm : Form
         if (undo.Count == 0) { ShowSnack("Nothing to undo", false); return; }
         var step = undo[undo.Count - 1];
         if (only != null && step != only) { ShowSnack("That change was already undone or another one came after it", false); return; }
+        // all-users values first: when the UAC prompt is declined, nothing is undone and the step stays
+        var errors = new List<string>();
+        var lm = step.AllUsersRevert();
+        if (lm.Count > 0)
+        {
+            var res = AllUsers.Set(lm, false, Handle);
+            if (res.Cancelled) { ShowSnack(NeedsAdmin("Nothing undone"), true); return; }
+            errors.AddRange(res.Errors);
+        }
         undo.RemoveAt(undo.Count - 1);
-        var errors = step.Revert();
+        errors.AddRange(step.RevertCurrentUser());
         foreach (var c in step.Changes)
             Program.Log("undo " + (c.Hive == RegistryHive.LocalMachine ? "" : "(current user) ") + c.Exe + ": [" + c.After + "] -> [" + c.Before + "]");
         foreach (var err in errors) Program.Log("undo failed: " + err);
@@ -2293,36 +2325,108 @@ class MainForm : Form
         else ShowSnack(m, false);
     }
 
-    void Apply() { Apply(ModeKeys[modes.Selected], SelectedEntries()); }
+    void Apply() { Apply(ModeKeys[modes.Selected], SelectedEntries(), allUsersScope); }
 
-    void Apply(string mode, List<Entry> items)
+    // For all users: sets it for all users and clears the current user's own value, as Windows' dialog does.
+    // Only for me: sets the current user's value; where an all-users value exists, Windows keeps using that one.
+    void Apply(string mode, List<Entry> items, bool forAllUsers)
     {
         if (items.Count == 0) return;
-        string groupName = SelectedGroupName();
+        string what = What(items.Select(i => i.Display).ToList());
+        string m = (mode == "Not set" ? "Override removed for " + what : modes.Items[Array.IndexOf(ModeKeys, mode)] + " scaling set for " + what) +
+                   (forAllUsers ? "" : ", for you only");
+        int shadowed = forAllUsers || mode == "Not set" ? 0 : items.Count(i => i.AllUsers != "Not set");
+        if (shadowed > 0)
+            m += items.Count == 1 ? " (Windows keeps using its all-users setting)"
+                                  : " (Windows keeps using the all-users setting for " + shadowed + " of them)";
+        if (forAllUsers)
+            Change(items, m, items.Select(i => Op(i.Path, mode)).ToList(),
+                   items.Where(i => i.CurrentUser != "Not set").Select(i => Op(i.Path, "Not set")).ToList());
+        else
+            Change(items, m, new List<KeyValuePair<string, string>>(), items.Select(i => Op(i.Path, mode)).ToList());
+    }
 
-        var errors = new List<string>();
-        var done = new List<string>();
-        var step = UndoStep.Begin(null, items.Select(i => i.Path));
-        foreach (var e in items)
+    // ---------- Who the setting is for ----------
+    const string SettingsKey = @"Software\DpiOverride";
+
+    static bool LoadScope()
+    {
+        try { using (var k = Registry.CurrentUser.OpenSubKey(SettingsKey)) return k == null || Convert.ToString(k.GetValue("Scope")) != "CurrentUser"; }
+        catch { return true; }
+    }
+
+    void SetScope(bool forAllUsers)
+    {
+        allUsersScope = forAllUsers;
+        try { using (var k = Registry.CurrentUser.CreateSubKey(SettingsKey)) k.SetValue("Scope", forAllUsers ? "AllUsers" : "CurrentUser"); }
+        catch (Exception ex) { Program.Log("couldn't save the scope: " + ex.Message); }
+        UpdateScopeUi();
+    }
+
+    void UpdateScopeUi()
+    {
+        btnScope.Text = allUsersScope ? "All users" : "Only me";
+        btnScope.Glyph = allUsersScope ? Theme.GPeople : Theme.GPerson;
+        // Windows' shield on buttons that ask for admin rights
+        bool asks = allUsersScope && Environment.OSVersion.Platform == PlatformID.Win32NT && !Program.IsAdmin();
+        btnApply.Glyph = asks ? Theme.GShield : Theme.GCheck;
+        applyTip.SetToolTip(btnApply, allUsersScope ? "Set it for all users" + (asks ? " (asks for administrator rights)" : "")
+                                                    : "Set it only for you (Windows still prefers an all-users setting)");
+        btnScope.Invalidate(); btnApply.Invalidate();
+        LayoutBottom();
+    }
+
+    // ---------- Writing ----------
+    static KeyValuePair<string, string> Op(string exe, string mode) { return new KeyValuePair<string, string>(exe, mode); }
+
+    // "HASS.Agent", "League of Legends (3 programs)" or "4 programs"
+    string What(List<string> names)
+    {
+        string groupName = SelectedGroupName();
+        return names.Count == 1 ? names[0] : groupName != null ? groupName + " (" + names.Count + " programs)" : names.Count + " programs";
+    }
+
+    static string NeedsAdmin(string what) { return what + ": changing the setting for all users needs administrator rights"; }
+
+    // Sets DPI modes: all-users ones through AllUsers (one UAC prompt unless the app already runs as admin), then the
+    // current user's directly. False when the UAC prompt was declined; then nothing was changed.
+    bool WriteModes(List<KeyValuePair<string, string>> allUsers, List<KeyValuePair<string, string>> currentUser, List<string> errors)
+    {
+        if (allUsers.Count > 0)
+        {
+            Cursor = Cursors.WaitCursor;
+            AllUsers.Result res;
+            try { res = AllUsers.Set(allUsers, false, Handle); }
+            finally { Cursor = Cursors.Default; }
+            if (res.Cancelled) { ShowSnack(NeedsAdmin("Nothing changed"), true); return false; }
+            errors.AddRange(res.Errors);
+        }
+        foreach (var o in currentUser)
         {
             try
             {
-                Compat.Set(RegistryHive.LocalMachine, e.Path, mode);
-                if (e.CurrentUser != "Not set") Compat.Set(RegistryHive.CurrentUser, e.Path, "Not set");
-                done.Add(e.Display);
-                Program.Log("set " + mode + " for " + e.Path);
+                Compat.Set(RegistryHive.CurrentUser, o.Key, o.Value);
+                Program.Log("set " + o.Value + " (current user) for " + o.Key);
             }
             catch (Exception ex)
             {
-                errors.Add(e.Name + ": " + ex.Message);
-                Program.Log("set failed for " + e.Path + ": " + ex);
+                errors.Add(Grouping.FileName(o.Key) + ": " + ex.Message);
+                Program.Log("set failed (current user) for " + o.Key + ": " + ex);
             }
         }
-        string what = done.Count == 1 ? done[0] : groupName != null ? groupName + " (" + done.Count + " programs)" : done.Count + " programs";
-        string m = mode == "Not set" ? "Override removed for " + what : modes.Items[Array.IndexOf(ModeKeys, mode)] + " scaling set for " + what;
-        step.Label = errors.Count == 0 ? m : "the last change";
-        var kept = Remember(step);   // also when some failed: the ones that worked can be undone
+        return true;
+    }
+
+    // Makes a change that can be undone, reloads with the programs selected and reports it
+    void Change(List<Entry> items, string message, List<KeyValuePair<string, string>> allUsers, List<KeyValuePair<string, string>> currentUser)
+    {
+        string groupName = SelectedGroupName();
         var paths = items.Select(i => i.Path).ToList();
+        var errors = new List<string>();
+        var step = UndoStep.Begin(null, paths);
+        if (!WriteModes(allUsers, currentUser, errors)) return;
+        step.Label = errors.Count == 0 ? message : "the last change";
+        var kept = Remember(step);   // also when some failed: the ones that worked can be undone
         Reload(paths);
 
         if (errors.Count > 0)
@@ -2330,6 +2434,6 @@ class MainForm : Form
             ShowSnack(errors.Count == 1 ? "Couldn't change " + errors[0] : errors.Count + " changes failed", true);
             MessageBox.Show(this, string.Join("\n", errors), "Some changes failed", MessageBoxButtons.OK, MessageBoxIcon.Error);
         }
-        else if (done.Count > 0) ShowChanged(m, paths, kept, groupName);
+        else ShowChanged(message, paths, kept, groupName);
     }
 }
