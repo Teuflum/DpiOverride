@@ -124,16 +124,31 @@ static class Theme
     public static Bitmap GlyphImage(string glyph, Color c)
     {
         if (!HasIcons) return null;
-        int s = Dp(20);
-        var b = new Bitmap(s, s);
-        using (var g = Graphics.FromImage(b))
+        int s = Dp(20), big = s * 2;
+        // Drawn on a larger canvas first, then the visible pixels are centered: the icon font's line box
+        // doesn't sit centered on the glyph, which put menu icons a few pixels above their text
+        using (var tmp = new Bitmap(big, big))
         {
-            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
-            using (var br = new SolidBrush(c))
-            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                g.DrawString(glyph, IconSmall, br, new RectangleF(0, 0, s, s), sf);
+            using (var g = Graphics.FromImage(tmp))
+            {
+                g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+                using (var br = new SolidBrush(c))
+                using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                    g.DrawString(glyph, IconSmall, br, new RectangleF(0, 0, big, big), sf);
+            }
+            int x0 = big, y0 = big, x1 = -1, y1 = -1;
+            for (int y = 0; y < big; y++)
+                for (int x = 0; x < big; x++)
+                    if (tmp.GetPixel(x, y).A > 24) { x0 = Math.Min(x0, x); x1 = Math.Max(x1, x); y0 = Math.Min(y0, y); y1 = Math.Max(y1, y); }
+            var b = new Bitmap(s, s);
+            if (x1 < 0) return b;
+            using (var g = Graphics.FromImage(b))
+            {
+                var src = new Rectangle(x0, y0, x1 - x0 + 1, y1 - y0 + 1);
+                g.DrawImage(tmp, new Rectangle((s - src.Width) / 2, (s - src.Height) / 2, src.Width, src.Height), src, GraphicsUnit.Pixel);
+            }
+            return b;
         }
-        return b;
     }
 
     const TextFormatFlags Base = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter;
@@ -325,6 +340,18 @@ class MMenu : ContextMenuStrip
         }
 
         protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
+
+        // Centered in the item, like the text (the default places it by the item's padding). One dp lower, because
+        // Segoe UI's capitals sit about 0.06 em below the center of the line box the text is centered by.
+        protected override void OnRenderItemImage(ToolStripItemImageRenderEventArgs e)
+        {
+            var img = e.Image;
+            if (img == null) return;
+            var r = e.ImageRectangle;
+            var dst = new Rectangle(r.X + (r.Width - img.Width) / 2, (e.Item.Height - img.Height) / 2 + Theme.Dp(1), img.Width, img.Height);
+            if (e.Item.Enabled) e.Graphics.DrawImage(img, dst);
+            else ControlPaint.DrawImageDisabled(e.Graphics, img, dst.X, dst.Y, Theme.SurfaceContainer);
+        }
 
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
