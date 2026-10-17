@@ -40,6 +40,8 @@ static class Theme
     public static readonly Color Error = C(0xB3261E);
     public static readonly Color Running = C(0x2E7D32);
 
+    public const string GFile = "\uE8A5", GFolder = "\uE8B7";
+
     public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall;
     public static bool HasIcons;
 
@@ -106,6 +108,33 @@ static class Theme
     }
 
     public static Color Alpha(Color c, float a) { return Color.FromArgb((int)(255 * a), c.R, c.G, c.B); }
+
+    // Chevron drawn as lines (works without the icon font): pointing right, or down when open
+    public static void Chevron(Graphics g, Point c, bool down, Color color)
+    {
+        float h = Dp(4.5f);
+        PointF[] pts = down
+            ? new[] { new PointF(c.X - h, c.Y - h / 2), new PointF(c.X, c.Y + h / 2), new PointF(c.X + h, c.Y - h / 2) }
+            : new[] { new PointF(c.X - h / 2, c.Y - h), new PointF(c.X + h / 2, c.Y), new PointF(c.X - h / 2, c.Y + h) };
+        using (var pen = new Pen(color, Math.Max(1.5f, 1.6f * S)) { StartCap = LineCap.Round, EndCap = LineCap.Round, LineJoin = LineJoin.Round })
+            g.DrawLines(pen, pts);
+    }
+
+    // An icon-font glyph as a bitmap (for menu items); null without the icon font
+    public static Bitmap GlyphImage(string glyph, Color c)
+    {
+        if (!HasIcons) return null;
+        int s = Dp(20);
+        var b = new Bitmap(s, s);
+        using (var g = Graphics.FromImage(b))
+        {
+            g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
+            using (var br = new SolidBrush(c))
+            using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
+                g.DrawString(glyph, IconSmall, br, new RectangleF(0, 0, s, s), sf);
+        }
+        return b;
+    }
 
     const TextFormatFlags Base = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter;
 
@@ -184,11 +213,13 @@ class MButton : MControl
     public ButtonKind Kind = ButtonKind.Filled;
     public string Glyph;
     public Color? ContentOverride;
+    public bool DropDown;   // shows a chevron after the text
 
     public int PreferredWidth()
     {
         int w = Theme.Measure(Text, Theme.Label) + Theme.Dp(48);
         if (Glyph != null && Theme.HasIcons) w += Theme.Dp(26) - Theme.Dp(8);
+        if (DropDown) w += Theme.Dp(18);
         return w;
     }
 
@@ -215,7 +246,7 @@ class MButton : MControl
 
         bool glyph = Glyph != null && Theme.HasIcons;
         int tw = Theme.Measure(Text, Theme.Label);
-        int total = tw + (glyph ? Theme.Dp(26) : 0);
+        int total = tw + (glyph ? Theme.Dp(26) : 0) + (DropDown ? Theme.Dp(18) : 0);
         int x = (Width - total) / 2;
         if (glyph)
         {
@@ -224,6 +255,99 @@ class MButton : MControl
         }
         TextRenderer.DrawText(g, Text, Theme.Label, new Rectangle(x, 0, tw + Theme.Dp(4), Height), fg,
             TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPadding);
+        if (DropDown) Theme.Chevron(g, new Point(x + tw + Theme.Dp(12), Height / 2), true, fg);
+    }
+}
+
+// Material-style popup menu
+class MMenu : ContextMenuStrip
+{
+    [DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+
+    public MMenu()
+    {
+        Renderer = new MenuRenderer();
+        Style();
+    }
+
+    // Menus are often created as fields, before Theme.Init knows the display scale, so the style is applied again
+    // every time the menu opens
+    void Style()
+    {
+        Font = Theme.Body;
+        BackColor = Theme.SurfaceContainer;
+        ShowImageMargin = Theme.HasIcons;
+        ImageScalingSize = new Size(Theme.Dp(20), Theme.Dp(20));
+        Padding = new Padding(0, Theme.Dp(6), 0, Theme.Dp(6));
+    }
+
+    protected override void OnOpening(System.ComponentModel.CancelEventArgs e)
+    {
+        Style();
+        base.OnOpening(e);
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        try { int round = 3 /* DWMWCP_ROUNDSMALL */; DwmSetWindowAttribute(Handle, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, ref round, 4); }
+        catch { }
+    }
+
+    public ToolStripMenuItem Add(string text, string glyph, Action onClick)
+    {
+        var it = new ToolStripMenuItem(text) { Image = glyph != null ? Theme.GlyphImage(glyph, Theme.OnSurfaceVariant) : null };
+        it.Font = Theme.Body;
+        it.Padding = new Padding(Theme.Dp(4), Theme.Dp(7), Theme.Dp(16), Theme.Dp(7));
+        it.Click += (s, e) => onClick();
+        Items.Add(it);
+        return it;
+    }
+
+    public ToolStripSeparator AddSeparator()
+    {
+        var sep = new ToolStripSeparator();
+        Items.Add(sep);
+        return sep;
+    }
+
+    class MenuRenderer : ToolStripProfessionalRenderer
+    {
+        public MenuRenderer() { RoundedEdges = false; }
+
+        protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e) { e.Graphics.Clear(Theme.SurfaceContainer); }
+
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+        {
+            using (var pen = new Pen(Theme.OutlineVariant))
+                e.Graphics.DrawRectangle(pen, 0, 0, e.AffectedBounds.Width - 1, e.AffectedBounds.Height - 1);
+        }
+
+        protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
+
+        protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+        {
+            if (!e.Item.Selected || !e.Item.Enabled) return;
+            var g = e.Graphics; Theme.Hq(g);
+            var r = new RectangleF(Theme.Dp(4), 0, e.Item.Width - Theme.Dp(8), e.Item.Height);
+            Theme.FillRound(g, Theme.Alpha(Theme.OnSurface, 0.08f), r, Theme.Dp(6));
+        }
+
+        // Drawn here because the default text rectangle sits above the icon when the item has vertical padding
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            var color = e.Item.Enabled ? Theme.OnSurface : Theme.Mix(Theme.SurfaceContainer, Theme.OnSurface, 0.38f);
+            var r = new Rectangle(e.TextRectangle.X, 0, e.Item.Width - e.TextRectangle.X, e.Item.Height);
+            TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, r, color,
+                TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
+        }
+
+        protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+        {
+            int y = e.Item.Height / 2;
+            using (var pen = new Pen(Theme.OutlineVariant)) e.Graphics.DrawLine(pen, Theme.Dp(12), y, e.Item.Width - Theme.Dp(12), y);
+        }
     }
 }
 
@@ -567,6 +691,17 @@ class ConfirmDialog : Form
     }
 }
 
+// A list row: one program, a group header, or a program inside an open group
+class Row
+{
+    public Entry Entry;     // null for a group header
+    public Group Group;     // the group this row heads or belongs to
+    public Row Parent;      // the group header of a program inside an open group
+    public ListViewItem Item;
+    public bool IsGroup { get { return Entry == null; } }
+    public bool IsChild { get { return Parent != null; } }
+}
+
 class MainForm : Form
 {
     readonly AppBar appBar = new AppBar();
@@ -588,6 +723,12 @@ class MainForm : Form
     readonly Snackbar snack = new Snackbar();
 
     readonly HashSet<string> extra = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    readonly HashSet<string> addedFolders = new HashSet<string>(StringComparer.OrdinalIgnoreCase);   // used as groups as they are
+    readonly HashSet<string> expanded = new HashSet<string>(StringComparer.OrdinalIgnoreCase);       // roots of open groups
+    readonly MMenu addMenu = new MMenu();
+    ToolStripMenuItem addHere;
+    ToolStripSeparator addHereSep;
+    string addHereDir;
     readonly Dictionary<string, string> descCache = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
     readonly Dictionary<string, Bitmap> iconCache = new Dictionary<string, Bitmap>(StringComparer.OrdinalIgnoreCase);
     readonly string winDir = Environment.GetFolderPath(Environment.SpecialFolder.Windows).TrimEnd(new[] { '\\' }) + "\\";
@@ -595,6 +736,9 @@ class MainForm : Form
     int shownCount;
     int sortCol = 0; bool sortAsc = true;
     int hoverIndex = -1;
+    const int Gutter = 30;      // room for the expand chevron left of the icon
+    const int ChildIndent = 30;
+    const int MaxFolderScan = 2000;
 
     static readonly string[] ColNames = { "PROGRAM", "ALL USERS", "CURRENT USER", "RENDERING", "LOCATION" };
     List<int> monitorDpis = new List<int>();
@@ -658,9 +802,13 @@ class MainForm : Form
         chipOverride.CheckedChanged += (s, e) => FillList();
         chipBlurry.Text = "Possibly blurry";
         chipBlurry.CheckedChanged += (s, e) => FillList();
-        btnAdd.Kind = ButtonKind.Tonal; btnAdd.Text = "Add program"; btnAdd.Glyph = Theme.GAdd;
-        btnAdd.Click += (s, e) => Browse();
-        new ToolTip().SetToolTip(btnAdd, "Pick an .exe that isn't running");
+        btnAdd.Kind = ButtonKind.Tonal; btnAdd.Text = "Add"; btnAdd.Glyph = Theme.GAdd; btnAdd.DropDown = true;
+        btnAdd.Click += (s, e) => ShowAddMenu();
+        addMenu.Add("Program (.exe)…", Theme.GFile, Browse);
+        addMenu.Add("All programs in a folder…", Theme.GFolder, BrowseFolder);
+        addHereSep = addMenu.AddSeparator();
+        addHere = addMenu.Add("", Theme.GFolder, () => AddPaths(new[] { addHereDir }));
+        new ToolTip().SetToolTip(btnAdd, "Add a program that isn't running, or every program in a folder");
         toolbar.Controls.AddRange(new Control[] { search, chipHide, chipOverride, chipBlurry, btnAdd });
         toolbar.Resize += (s, e) => LayoutToolbar();
         toolbar.Paint += PaintToolbar;
@@ -695,13 +843,13 @@ class MainForm : Form
         list.DrawSubItem += (s, e) => { e.DrawDefault = false; };
         list.DrawColumnHeader += (s, e) => { e.DrawDefault = true; };
         list.Resize += (s, e) => LayoutColumns();
+        list.ClientSizeChanged += (s, e) => LayoutColumns();   // the vertical scrollbar came or went
         list.MouseMove += ListMouseMove;
         list.MouseLeave += (s, e) => SetHover(-1);
-        list.SelectedIndexChanged += (s, e) => UpdateSelectionUi();
-        list.KeyDown += (s, e) =>
-        {
-            if (e.Control && e.KeyCode == Keys.A) { list.BeginUpdate(); foreach (ListViewItem it in list.Items) it.Selected = true; list.EndUpdate(); e.Handled = true; }
-        };
+        list.SelectedIndexChanged += (s, e) => { UpdateSelectionUi(); list.Invalidate(); };
+        list.MouseDown += ListMouseDown;
+        list.MouseDoubleClick += ListDoubleClick;
+        list.KeyDown += ListKeyDown;
 
         empty.Text = "No programs match your search or filters";
         empty.ForeColor = Theme.OnSurfaceVariant;
@@ -740,7 +888,12 @@ class MainForm : Form
         Controls.Add(snack);
 
         LayoutToolbar(); LayoutBottom();
-        Shown += (s, e) => { Reload(); list.Focus(); };
+        Shown += (s, e) =>
+        {
+            Reload();
+            list.Focus();
+            if (Program.StartPaths.Count > 0) AddPaths(Program.StartPaths);
+        };
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -878,7 +1031,7 @@ class MainForm : Form
     {
         var g = e.Graphics;
         using (var pen = new Pen(Theme.OutlineVariant, 1f)) g.DrawLine(pen, 0, 0, bottom.Width, 0);
-        int n = list.SelectedItems.Count;
+        int n = SelectedEntries().Count;
         string title = n == 0 ? "Select programs in the list" : n == 1 ? "1 program selected" : n + " programs selected";
         string sub = "Scaling performed by: " + ModeDescription() + "  ·  restart afterwards";
         int x = Dp(28), w = modes.Left - x - Dp(16);
@@ -901,51 +1054,87 @@ class MainForm : Form
     void DrawRow(object sender, DrawListViewItemEventArgs e)
     {
         var g = e.Graphics; Theme.Hq(g);
-        var en = (Entry)e.Item.Tag;
+        var row = (Row)e.Item.Tag;
         var r = e.Bounds;
         r.Width = Math.Max(r.Width, list.ClientSize.Width);
         using (var b = new SolidBrush(Theme.Card)) g.FillRectangle(b, r);
 
+        int indent = row.IsChild ? Dp(ChildIndent) : 0;
+        int iconX = r.X + Dp(Gutter + 14) + indent;
         bool sel = e.Item.Selected, hov = e.ItemIndex == hoverIndex;
+        bool inSelectedGroup = row.IsChild && row.Parent.Item.Selected;    // included when the group is applied
         var hr = new RectangleF(r.X + Dp(6), r.Y + Dp(2), r.Width - Dp(12), r.Height - Dp(4));
         if (sel) Theme.FillRound(g, Theme.SecondaryContainer, hr, Dp(12));
+        else if (inSelectedGroup) Theme.FillRound(g, Theme.Mix(Theme.Card, Theme.SecondaryContainer, hov ? 0.7f : 0.45f), hr, Dp(12));
         else if (hov) Theme.FillRound(g, Theme.Mix(Theme.Card, Theme.OnSurface, 0.05f), hr, Dp(12));
         else if (e.ItemIndex < list.Items.Count - 1)
-            using (var pen = new Pen(Theme.Divider, 1f)) g.DrawLine(pen, r.X + Dp(64), r.Bottom - 1, r.Right - Dp(16), r.Bottom - 1);
+            using (var pen = new Pen(Theme.Divider, 1f)) g.DrawLine(pen, iconX, r.Bottom - 1, r.Right - Dp(16), r.Bottom - 1);
 
         var w = ColumnWidths(list.ClientSize.Width);
         int x = r.X;
-        // Column 0: icon + name + exe
+        int mid = r.Y + r.Height / 2;
+        var en = row.IsGroup ? row.Group.Lead : row.Entry;
+
+        // Column 0: chevron + icon + name + exe
+        if (row.IsGroup) Theme.Chevron(g, new Point(r.X + Dp(26), mid), expanded.Contains(row.Group.Root), Theme.OnSurfaceVariant);
         int icon = Dp(32);
-        var ir = new Rectangle(x + Dp(18), r.Y + (r.Height - icon) / 2, icon, icon);
+        var ir = new Rectangle(iconX, r.Y + (r.Height - icon) / 2, icon, icon);
         var bmp = GetIcon(en.Path);
+        string title = row.IsGroup ? row.Group.Name : en.Display;
         if (bmp != null) g.DrawImage(bmp, ir);
         else
         {
             Theme.FillRound(g, Theme.PrimaryContainer, ir, Dp(8));
-            Theme.Text(g, en.Display.Length > 0 ? en.Display.Substring(0, 1).ToUpperInvariant() : "?", Theme.BodyStrong, ir, Theme.OnPrimaryContainer, TextFormatFlags.HorizontalCenter);
+            Theme.Text(g, title.Length > 0 ? title.Substring(0, 1).ToUpperInvariant() : "?", Theme.BodyStrong, ir, Theme.OnPrimaryContainer, TextFormatFlags.HorizontalCenter);
         }
+        if (row.IsGroup) DrawCountBadge(g, row.Group.Members.Count, ir, sel ? Theme.SecondaryContainer : Theme.Card);
+
+        string sub;
+        if (row.IsGroup)
+        {
+            int running = row.Group.RunningCount;
+            sub = row.Group.Members.Count + " programs" + (running > 0 ? "  ·  " + running + " running" : "");
+        }
+        else sub = row.IsChild ? Grouping.Relative(en.Path, row.Group.Root) : en.Name;
         int tx = ir.Right + Dp(14), tw = w[0] - (tx - x) - Dp(8);
-        int mid = r.Y + r.Height / 2;
-        Theme.Text(g, en.Display, Theme.BodyStrong, new Rectangle(tx, mid - Dp(21), tw, Dp(22)), Theme.OnSurface);
-        Theme.Text(g, en.Name, Theme.Small, new Rectangle(tx, mid + Dp(1), tw, Dp(19)), Theme.OnSurfaceVariant);
+        Theme.Text(g, title, Theme.BodyStrong, new Rectangle(tx, mid - Dp(21), tw, Dp(22)), Theme.OnSurface);
+        Theme.Text(g, sub, Theme.Small, new Rectangle(tx, mid + Dp(1), tw, Dp(19)), Theme.OnSurfaceVariant);
         x += w[0];
 
-        DrawModeChip(g, en.AllUsers, new Rectangle(x + Dp(8), r.Y, w[1] - Dp(16), r.Height));
+        DrawModeChip(g, row.IsGroup ? GroupMode(row.Group, true) : en.AllUsers, new Rectangle(x + Dp(8), r.Y, w[1] - Dp(16), r.Height));
         x += w[1];
-        DrawModeChip(g, en.CurrentUser, new Rectangle(x + Dp(8), r.Y, w[2] - Dp(16), r.Height));
+        DrawModeChip(g, row.IsGroup ? GroupMode(row.Group, false) : en.CurrentUser, new Rectangle(x + Dp(8), r.Y, w[2] - Dp(16), r.Height));
         x += w[2];
 
-        DrawRendering(g, en, new Rectangle(x + Dp(8), r.Y, w[3] - Dp(16), r.Height));
+        DrawLook(g, row.IsGroup ? LookOf(row.Group) : LookOf(en), new Rectangle(x + Dp(8), r.Y, w[3] - Dp(16), r.Height));
         x += w[3];
 
-        string dir = "";
-        try { dir = Path.GetDirectoryName(en.Path) ?? en.Path; } catch { dir = en.Path; }
+        string dir = row.IsGroup ? row.Group.Root : Grouping.FolderOf(en.Path);
         Theme.Text(g, dir, Theme.Small, new Rectangle(x + Dp(8), r.Y, w[4] - Dp(24), r.Height), Theme.OnSurfaceVariant, TextFormatFlags.PathEllipsis);
     }
 
+    // Number of programs in a group, as a small badge on the icon's corner
+    void DrawCountBadge(Graphics g, int n, Rectangle icon, Color ring)
+    {
+        string t = n > 99 ? "99+" : n.ToString();
+        int h = Dp(18), bw = Math.Max(h, Theme.Measure(t, Theme.SmallStrong) + Dp(10));
+        var br = new RectangleF(icon.Right - bw + Dp(7), icon.Bottom - h + Dp(5), bw, h);
+        var ringR = RectangleF.Inflate(br, Dp(2), Dp(2));
+        Theme.FillRound(g, ring, ringR, ringR.Height / 2f);
+        Theme.FillRound(g, Theme.Primary, br, br.Height / 2f);
+        TextRenderer.DrawText(g, t, Theme.SmallStrong, Rectangle.Round(br), Theme.OnPrimary,
+            TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
+    }
+
+    // The group's setting when all its programs agree, otherwise "Mixed"
+    static string GroupMode(Group grp, bool allUsers)
+    {
+        var modes = grp.Members.Select(m => allUsers ? m.AllUsers : m.CurrentUser).Distinct().ToList();
+        return modes.Count == 1 ? modes[0] : "Mixed";
+    }
+
     // ---------- Rendering (live DPI awareness) ----------
-    enum Look { NotRunning, Unknown, Sharp, MainOnly, Blurry, Enhanced, Unscaled }
+    enum Look { NotRunning, NoWindow, Unknown, Sharp, MainOnly, Blurry, Enhanced, Unscaled }
 
     bool AnyScaled { get { return monitorDpis.Count == 0 ? Theme.S > 1.01f : monitorDpis.Any(d => d > 96); } }
     bool MixedDpi { get { return monitorDpis.Distinct().Count() > 1; } }
@@ -953,6 +1142,7 @@ class MainForm : Form
     Look LookOf(Entry e)
     {
         if (!e.Running) return Look.NotRunning;
+        if (!e.HasWindow) return Look.NoWindow;
         switch (e.Rendering)
         {
             case Awareness.PerMonitor:
@@ -962,6 +1152,14 @@ class MainForm : Form
             case Awareness.Unaware: return AnyScaled ? Look.Blurry : Look.Unscaled;
             default: return Look.Unknown;
         }
+    }
+
+    // A group looks as bad as its worst running program
+    Look LookOf(Group grp)
+    {
+        var running = grp.Members.Where(m => m.Running).ToList();
+        if (running.Count == 0) return Look.NotRunning;
+        return running.Select(m => LookOf(m)).OrderBy(l => LookRank(l)).First();
     }
 
     static int LookRank(Look l)
@@ -974,7 +1172,8 @@ class MainForm : Form
             case Look.Unscaled: return 3;
             case Look.Sharp: return 4;
             case Look.Unknown: return 5;
-            default: return 6;
+            case Look.NoWindow: return 6;
+            default: return 7;
         }
     }
 
@@ -990,13 +1189,13 @@ class MainForm : Form
             case Look.Enhanced: return "Windows scales it with System (Enhanced): text is sharp, some graphics may still be blurry.";
             case Look.Unscaled: return "Doesn't handle DPI itself, but your displays are at 100 %, so nothing is stretched.";
             case Look.Unknown: return "Windows didn't report how this program scales (it may be protected).";
+            case Look.NoWindow: return "Running in the background without a window, so there's nothing on screen that could look blurry.";
             default: return "Not running. Start it to see how it renders.";
         }
     }
 
-    void DrawRendering(Graphics g, Entry e, Rectangle cell)
+    void DrawLook(Graphics g, Look look, Rectangle cell)
     {
-        var look = LookOf(e);
         string label; Color bg, fg;
         switch (look)
         {
@@ -1006,6 +1205,7 @@ class MainForm : Form
             case Look.Enhanced: label = "GDI-scaled"; bg = Theme.InfoBg; fg = Theme.InfoFg; break;
             case Look.Unscaled: label = "Unscaled"; bg = Theme.SurfaceContainerHigh; fg = Theme.OnSurfaceVariant; break;
             case Look.Unknown: Theme.Text(g, "Unknown", Theme.Small, cell, Theme.Outline); return;
+            case Look.NoWindow: Theme.Text(g, "No window", Theme.Small, cell, Theme.Outline); return;
             default: Theme.Text(g, "Not running", Theme.Small, cell, Theme.OutlineVariant); return;
         }
         DrawChip(g, label, bg, fg, cell);
@@ -1030,6 +1230,7 @@ class MainForm : Form
             Theme.Text(g, "Not set", Theme.Small, cell, Theme.Outline);
             return;
         }
+        if (mode == "Mixed") { bg = Theme.SurfaceContainerHigh; fg = Theme.OnSurfaceVariant; }
         string label = mode == "System (Enhanced)" ? "Enhanced" : mode;
         int h = Dp(26);
         int cw = Math.Min(cell.Width, Theme.Measure(label, Theme.SmallStrong) + Dp(24));
@@ -1054,6 +1255,101 @@ class MainForm : Form
         SetHover(hit.Item != null ? hit.Item.Index : -1);
     }
 
+    bool OnChevron(ListViewItem it, int x)
+    {
+        return ((Row)it.Tag).IsGroup && x - it.Bounds.X < Dp(Gutter + 12);
+    }
+
+    void ListMouseDown(object sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        var it = list.GetItemAt(e.X, e.Y);
+        if (it != null && OnChevron(it, e.X))
+        {
+            var row = (Row)it.Tag;
+            BeginInvoke(new Action(() => Toggle(row.Group.Root)));   // after the ListView has handled the click
+        }
+    }
+
+    void ListDoubleClick(object sender, MouseEventArgs e)
+    {
+        var it = list.GetItemAt(e.X, e.Y);
+        if (it != null && ((Row)it.Tag).IsGroup && !OnChevron(it, e.X)) Toggle(((Row)it.Tag).Group.Root);
+    }
+
+    void ListKeyDown(object sender, KeyEventArgs e)
+    {
+        if (e.Control && e.KeyCode == Keys.A)
+        {
+            list.BeginUpdate(); foreach (ListViewItem it in list.Items) it.Selected = true; list.EndUpdate();
+            e.Handled = true;
+            return;
+        }
+        var focused = list.FocusedItem;
+        if (focused == null) return;
+        var row = (Row)focused.Tag;
+        bool open = row.IsGroup && expanded.Contains(row.Group.Root);
+        if (row.IsGroup && ((e.KeyCode == Keys.Right && !open) || (e.KeyCode == Keys.Left && open) || e.KeyCode == Keys.Enter))
+            Toggle(row.Group.Root);
+        else if (row.IsChild && e.KeyCode == Keys.Left)
+        {
+            list.SelectedItems.Clear();
+            row.Parent.Item.Selected = true;
+            row.Parent.Item.Focused = true;
+            row.Parent.Item.EnsureVisible();
+        }
+        else return;
+        e.Handled = true; e.SuppressKeyPress = true;
+    }
+
+    // Opens or closes a group. Closing it while programs inside are selected selects the whole group instead.
+    void Toggle(string root)
+    {
+        var keys = SelectedKeys();
+        if (expanded.Remove(root))
+        {
+            var rows = list.SelectedItems.Cast<ListViewItem>().Select(i => (Row)i.Tag).ToList();
+            var inside = rows.Where(r => r.IsChild && string.Equals(r.Group.Root, root, StringComparison.OrdinalIgnoreCase)).ToList();
+            if (inside.Count > 0)
+            {
+                keys = rows.Except(inside).SelectMany(RowKeys).ToList();
+                keys.Add(inside[0].Group.Key);
+            }
+        }
+        else expanded.Add(root);
+        int top = list.TopItem != null ? list.TopItem.Index : 0;
+        FillList(keys, false);
+        if (top < list.Items.Count) try { list.TopItem = list.Items[top]; } catch { }
+        var head = list.Items.Cast<ListViewItem>().FirstOrDefault(i => ((Row)i.Tag).IsGroup &&
+                       string.Equals(((Row)i.Tag).Group.Root, root, StringComparison.OrdinalIgnoreCase));
+        if (head != null) { head.Focused = true; head.EnsureVisible(); }
+    }
+
+    // Programs behind the selected rows (a group row stands for all programs in it)
+    List<Entry> SelectedEntries()
+    {
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var result = new List<Entry>();
+        foreach (ListViewItem it in list.SelectedItems)
+        {
+            var row = (Row)it.Tag;
+            foreach (var e in row.IsGroup ? row.Group.Members : new List<Entry> { row.Entry })
+                if (seen.Add(e.Path)) result.Add(e);
+        }
+        return result;
+    }
+
+    static IEnumerable<string> RowKeys(Row r)
+    {
+        if (!r.IsGroup) return new[] { r.Entry.Path };
+        return new[] { r.Group.Key }.Concat(r.Group.Members.Select(m => m.Path));
+    }
+
+    List<string> SelectedKeys()
+    {
+        return list.SelectedItems.Cast<ListViewItem>().SelectMany(i => RowKeys((Row)i.Tag)).ToList();
+    }
+
     void HeaderClick(object sender, MouseEventArgs e)
     {
         int x = 0;
@@ -1072,8 +1368,9 @@ class MainForm : Form
 
     void UpdateSelectionUi()
     {
-        btnApply.Enabled = list.SelectedItems.Count > 0;
-        btnRestart.Enabled = !restarting && list.SelectedItems.Cast<ListViewItem>().Any(i => ((Entry)i.Tag).Running);
+        var sel = SelectedEntries();
+        btnApply.Enabled = sel.Count > 0;
+        btnRestart.Enabled = !restarting && sel.Any(e => e.Running);
         bottom.Invalidate();
     }
 
@@ -1084,7 +1381,7 @@ class MainForm : Form
         if (descCache.TryGetValue(path, out d)) return d;
         d = null;
         try { if (File.Exists(path)) d = FileVersionInfo.GetVersionInfo(path).FileDescription; } catch { }
-        if (string.IsNullOrWhiteSpace(d)) d = Path.GetFileNameWithoutExtension(path);
+        if (string.IsNullOrWhiteSpace(d)) d = Path.GetFileNameWithoutExtension(Grouping.FileName(path));
         d = d.Trim();
         descCache[path] = d;
         return d;
@@ -1106,7 +1403,7 @@ class MainForm : Form
         return b;
     }
 
-    void Reload()
+    void Reload(IEnumerable<string> select = null)
     {
         Cursor = Cursors.WaitCursor;
         try
@@ -1116,6 +1413,7 @@ class MainForm : Form
             var lm = Compat.ReadAll(RegistryHive.LocalMachine);
             var cu = Compat.ReadAll(RegistryHive.CurrentUser);
 
+            var owners = Program.Demo ? null : DpiInfo.WindowOwners();
             var paths = new HashSet<string>(running.Keys, StringComparer.OrdinalIgnoreCase);
             foreach (var kv in lm) if (Compat.ModeOf(kv.Value) != "Not set") paths.Add(kv.Key);
             foreach (var kv in cu) if (Compat.ModeOf(kv.Value) != "Not set") paths.Add(kv.Key);
@@ -1127,19 +1425,23 @@ class MainForm : Form
                 List<int> pids;
                 lm.TryGetValue(p, out a); cu.TryGetValue(p, out c);
                 if (!running.TryGetValue(p, out pids)) pids = new List<int>();
+                // judge how it looks by the instances that show a window
+                var windowed = owners == null ? pids : pids.Where(owners.Contains).ToList();
                 return new Entry
                 {
                     Path = p,
-                    Name = Path.GetFileName(p),
+                    Name = Grouping.FileName(p),
                     Display = Describe(p),
                     AllUsers = Compat.ModeOf(a),
                     CurrentUser = Compat.ModeOf(c),
                     Pids = pids,
-                    Rendering = pids.Count == 0 ? Awareness.Unknown : Program.Demo ? DemoAwareness(p) : DpiInfo.Best(pids),
+                    Rendering = pids.Count == 0 ? Awareness.Unknown : Program.Demo ? DemoAwareness(p)
+                              : DpiInfo.Best(windowed.Count > 0 ? windowed : pids),
+                    HasWindow = windowed.Count > 0,
                     System = p.StartsWith(winDir, StringComparison.OrdinalIgnoreCase),
                 };
             }).ToList();
-            FillList();
+            FillList(select, true, select != null);
             Program.Log("loaded " + entries.Count + " entries");
         }
         catch (Exception ex)
@@ -1165,12 +1467,32 @@ class MainForm : Form
         }
     }
 
-    void FillList(IEnumerable<string> select = null)
+    static string Col(Row r, int c)
     {
-        var sel = new HashSet<string>(select ?? list.SelectedItems.Cast<ListViewItem>().Select(i => ((Entry)i.Tag).Path),
-                                      StringComparer.OrdinalIgnoreCase);
+        if (!r.IsGroup) return Col(r.Entry, c);
+        switch (c)
+        {
+            case 0: return r.Group.Name;
+            case 1: return GroupMode(r.Group, true);
+            case 2: return GroupMode(r.Group, false);
+            case 3: return LookRank(current.LookOf(r.Group)).ToString();
+            default: return r.Group.Root;
+        }
+    }
+
+    IEnumerable<T> Sorted<T>(IEnumerable<T> rows, Func<T, string> key)
+    {
+        return sortAsc ? rows.OrderBy(key, StringComparer.CurrentCultureIgnoreCase)
+                       : rows.OrderByDescending(key, StringComparer.CurrentCultureIgnoreCase);
+    }
+
+    // Rebuilds the rows. `select` lists the paths (and group keys) to select, by default the current selection.
+    // With wholeGroups, a group whose programs are all in `select` is selected as one row.
+    void FillList(IEnumerable<string> select = null, bool scroll = true, bool wholeGroups = false)
+    {
+        var sel = new HashSet<string>(select ?? SelectedKeys(), StringComparer.OrdinalIgnoreCase);
         var f = search.Box.Text.Trim();
-        IEnumerable<Entry> rows = entries.Where(e =>
+        var shown = entries.Where(e =>
         {
             bool hasOverride = e.AllUsers != "Not set" || e.CurrentUser != "Not set";
             if (chipOverride.Checked && !hasOverride) return false;
@@ -1178,29 +1500,91 @@ class MainForm : Form
             if (chipHide.Checked && e.System && !hasOverride && !sel.Contains(e.Path)) return false;
             if (f.Length > 0 && (e.Display + " " + e.Path).IndexOf(f, StringComparison.OrdinalIgnoreCase) < 0) return false;
             return true;
-        });
-        rows = sortAsc ? rows.OrderBy(e => Col(e, sortCol), StringComparer.CurrentCultureIgnoreCase)
-                       : rows.OrderByDescending(e => Col(e, sortCol), StringComparer.CurrentCultureIgnoreCase);
+        }).ToList();
+
+        // Programs sharing an install folder become one group row
+        var roots = Grouping.Roots(shown.Select(e => e.Path), addedFolders);
+        var groups = new Dictionary<string, Group>(StringComparer.OrdinalIgnoreCase);
+        var tops = new List<Row>();
+        foreach (var e in shown)
+        {
+            string root;
+            if (!roots.TryGetValue(e.Path, out root)) { tops.Add(new Row { Entry = e }); continue; }
+            Group grp;
+            if (!groups.TryGetValue(root, out grp))
+            {
+                grp = new Group { Root = root, Name = Grouping.GroupName(root) };
+                groups[root] = grp;
+                tops.Add(new Row { Group = grp });
+            }
+            grp.Members.Add(e);
+        }
+        foreach (var grp in groups.Values)
+            grp.Lead = grp.Members.OrderBy(m => Grouping.Depth(m.Path)).ThenBy(m => m.Running ? 0 : 1).ThenBy(m => m.Name.Length).First();
 
         hoverIndex = -1;
         list.BeginUpdate();
         list.Items.Clear();
         ListViewItem first = null;
-        int n = 0;
-        foreach (var e in rows)
+        Action<Row, bool> add = (row, selected) =>
         {
-            var it = new ListViewItem(new[] { e.Display, e.AllUsers, e.CurrentUser, LookOf(e).ToString(), e.Path }) { Tag = e, ToolTipText = e.Display + "\n" + LookTip(e) };
+            ListViewItem it;
+            if (row.IsGroup)
+            {
+                var names = row.Group.Members.Select(m => m.Name).OrderBy(n => n, StringComparer.OrdinalIgnoreCase).ToList();
+                string tip = row.Group.Name + " (" + names.Count + " programs)\n" + string.Join("\n", names.Take(12)) +
+                             (names.Count > 12 ? "\n…" : "");
+                it = new ListViewItem(new[] { row.Group.Name, GroupMode(row.Group, true), GroupMode(row.Group, false), LookOf(row.Group).ToString(), row.Group.Root })
+                     { Tag = row, ToolTipText = tip };
+            }
+            else
+            {
+                var e = row.Entry;
+                it = new ListViewItem(new[] { e.Display, e.AllUsers, e.CurrentUser, LookOf(e).ToString(), e.Path })
+                     { Tag = row, ToolTipText = e.Display + "\n" + LookTip(e) };
+            }
+            row.Item = it;
             list.Items.Add(it);
-            if (sel.Contains(e.Path)) { it.Selected = true; if (first == null) first = it; }
-            n++;
+            if (selected) { it.Selected = true; if (first == null) first = it; }
+        };
+        foreach (var top in Sorted(tops, r => Col(r, sortCol)))
+        {
+            if (!top.IsGroup) { add(top, sel.Contains(top.Entry.Path)); continue; }
+            var grp = top.Group;
+            bool whole = sel.Contains(grp.Key) || (wholeGroups && grp.Members.All(m => sel.Contains(m.Path)));
+            if (!whole && grp.Members.Any(m => sel.Contains(m.Path))) expanded.Add(grp.Root);   // show selected programs inside
+            add(top, whole);
+            if (expanded.Contains(grp.Root))
+                foreach (var m in Sorted(grp.Members, m => Col(m, sortCol)))
+                    add(new Row { Entry = m, Group = grp, Parent = top }, !whole && sel.Contains(m.Path));
         }
         list.EndUpdate();
-        if (first != null) first.EnsureVisible();
-        shownCount = n;
-        empty.Visible = n == 0;
+        LayoutColumns();
+        if (first != null && scroll) first.EnsureVisible();
+        shownCount = shown.Count;
+        empty.Visible = shown.Count == 0;
         PlaceEmpty();
         toolbar.Invalidate();
         UpdateSelectionUi();
+    }
+
+    // ---------- Adding programs and folders ----------
+    void ShowAddMenu()
+    {
+        // shortcut for the selected program's folder
+        addHereDir = SelectedFolder();
+        addHere.Visible = addHereSep.Visible = addHereDir != null;
+        if (addHereDir != null) addHere.Text = "All programs in \u201C" + Grouping.NameOf(addHereDir) + "\u201D";
+        addMenu.Show(btnAdd, new Point(btnAdd.Width, btnAdd.Height + Dp(4)), ToolStripDropDownDirection.BelowLeft);
+    }
+
+    // Install folder of the one selected row (its group's folder, or the folder the .exe is in)
+    string SelectedFolder()
+    {
+        if (list.SelectedItems.Count != 1) return null;
+        var row = (Row)list.SelectedItems[0].Tag;
+        string dir = row.Group != null ? row.Group.Root : Grouping.FolderOf(row.Entry.Path);
+        return Directory.Exists(dir) ? dir : null;
     }
 
     void Browse()
@@ -1208,45 +1592,112 @@ class MainForm : Form
         using (var dlg = new OpenFileDialog { Filter = "Programs (*.exe)|*.exe", Title = "Choose a program" })
         {
             if (dlg.ShowDialog(this) != DialogResult.OK) return;
-            extra.Add(dlg.FileName);
-            search.Box.Text = "";
-            Reload();
-            FillList(new[] { dlg.FileName });
+            AddPaths(new[] { dlg.FileName });
         }
+    }
+
+    void BrowseFolder()
+    {
+        string start = SelectedFolder();
+        if (start == null) try { start = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles); } catch { }
+        string dir = FolderPicker.Pick(this, "Choose a folder: every program (.exe) in it and its subfolders is added", start);
+        if (dir != null) AddPaths(new[] { dir });
+    }
+
+    // Adds .exe files and every .exe inside folders, then selects them so a mode can be applied in one go
+    void AddPaths(IEnumerable<string> paths)
+    {
+        var added = new List<string>();
+        var errors = new List<string>();
+        string folderName = null;
+        int folders = 0;
+        foreach (var raw in paths)
+        {
+            string p = raw;
+            if (Directory.Exists(p))
+            {
+                var exes = ScanFolder(p);
+                if (exes == null) continue;
+                if (exes.Count == 0) { errors.Add("No programs (.exe) in " + p); continue; }
+                addedFolders.Add(p);
+                added.AddRange(exes);
+                folderName = Grouping.NameOf(p.TrimEnd(new[] { '\\', '/' }));
+                folders++;
+            }
+            else if (File.Exists(p) && p.EndsWith(".exe", StringComparison.OrdinalIgnoreCase)) added.Add(p);
+            else errors.Add("Not a program or folder: " + p);
+        }
+        foreach (var err in errors) Program.Log(err);
+        if (added.Count == 0)
+        {
+            if (errors.Count > 0) ShowSnack(errors[0], true);
+            return;
+        }
+        Program.Log("added " + added.Count + " programs" + (folders > 0 ? " from " + folders + " folder(s)" : ""));
+        extra.UnionWith(added);
+        // make sure the new programs aren't hidden by the search or a filter
+        search.Box.Text = "";
+        chipOverride.Checked = false;
+        chipBlurry.Checked = false;
+        Reload(added);
+        list.Focus();
+        string what = added.Count == 1 ? Describe(added[0]) : added.Count + " programs" + (folders == 1 ? " from " + folderName : "");
+        ShowSnack("Added " + what + ". Choose a scaling mode and apply it." + (errors.Count > 0 ? " (" + errors.Count + " skipped)" : ""), false);
+    }
+
+    // Every .exe in a folder, after asking when there are many. Null when cancelled.
+    List<string> ScanFolder(string dir)
+    {
+        List<string> exes;
+        Cursor = Cursors.WaitCursor;
+        try { exes = Grouping.FindExes(dir, MaxFolderScan + 1); }
+        finally { Cursor = Cursors.Default; }
+        bool capped = exes.Count > MaxFolderScan;
+        if (capped) exes.RemoveAt(exes.Count - 1);
+        if (exes.Count > 40 && !ConfirmDialog.Ask(this, "Add " + exes.Count + (capped ? "+" : "") + " programs?",
+                "Found " + (capped ? "more than " : "") + exes.Count + " programs (.exe) in " + dir + " and its subfolders" +
+                (capped ? " (only the first " + MaxFolderScan + " are added)" : "") + ". Add them all to the list?", "Add all"))
+            return null;
+        return exes;
     }
 
     // ---------- Restart ----------
     void RestartSelected()
     {
-        var targets = list.SelectedItems.Cast<ListViewItem>().Select(i => (Entry)i.Tag).Where(e => e.Running).ToList();
-        RestartEntries(targets);
+        var targets = SelectedEntries().Where(e => e.Running).ToList();
+        RestartEntries(targets, SelectedGroupName());
     }
 
-    void RestartEntries(List<Entry> targets)
+    // Name of the group when the selection is exactly one group row
+    string SelectedGroupName()
+    {
+        if (list.SelectedItems.Count != 1) return null;
+        var row = (Row)list.SelectedItems[0].Tag;
+        return row.IsGroup ? row.Group.Name : null;
+    }
+
+    void RestartEntries(List<Entry> targets, string groupName = null)
     {
         if (restarting || targets.Count == 0) return;
         string names = targets.Count == 1 ? targets[0].Display
                      : targets.Count == 2 ? targets[0].Display + " and " + targets[1].Display
-                     : targets.Count + " programs";
-        if (!ConfirmDialog.Ask(this, "Restart " + (targets.Count == 1 ? targets[0].Display : targets.Count + " programs") + "?",
-                names + " will be closed and started again so the new scaling setting takes effect. Unsaved work in " +
-                (targets.Count == 1 ? "it" : "them") + " may be lost.", "Restart"))
+                     : groupName ?? targets.Count + " programs";
+        string body = (groupName != null && targets.Count > 2 ? "All " + targets.Count + " running programs in " + groupName : names) +
+                      " will be closed and started again so the new scaling setting takes effect. Unsaved work in " +
+                      (targets.Count == 1 ? "it" : "them") + " may be lost.";
+        if (!ConfirmDialog.Ask(this, "Restart " + (targets.Count == 1 ? targets[0].Display : groupName ?? targets.Count + " programs") + "?", body, "Restart"))
             return;
 
         restarting = true;
         UpdateSelectionUi();
         ShowSnack("Restarting " + names + "…", false);
-        var jobs = targets.Select(t => new { t.Path, t.Display, Pids = new List<int>(t.Pids) }).ToList();
+        var jobs = targets.Select(t => new Restarter.Job { Exe = t.Path, Display = t.Display, Pids = new List<int>(t.Pids) }).ToList();
         var worker = new System.Threading.Thread(() =>
         {
-            var errors = new List<string>();
-            foreach (var j in jobs)
-            {
-                string err;
-                try { err = Program.Demo ? null : Restarter.Restart(j.Path, j.Pids); }
-                catch (Exception ex) { err = ex.Message; }
-                if (err != null) { errors.Add(j.Display + ": " + err); Program.Log("restart failed for " + j.Path + ": " + err); }
-            }
+            List<string> errors;
+            try { errors = Program.Demo ? new List<string>() : Restarter.RestartAll(jobs); }
+            catch (Exception ex) { errors = new List<string> { names + ": " + ex.Message }; }
+            foreach (var err in errors) Program.Log("restart failed: " + err);
             System.Threading.Thread.Sleep(2500); // let the programs start before re-reading their DPI mode
             BeginInvoke(new Action(() =>
             {
@@ -1264,7 +1715,9 @@ class MainForm : Form
     static Dictionary<string, List<int>> DemoRunning()
     {
         var d = new Dictionary<string, List<int>>(StringComparer.OrdinalIgnoreCase);
-        foreach (var p in new[] { @"C:\Program Files\Steam\steam.exe", @"C:\Riot Games\League of Legends\LeagueClient.exe",
+        foreach (var p in new[] { @"C:\Program Files\Steam\steam.exe", @"C:\Program Files\Steam\bin\cef\cef.win7x64\steamwebhelper.exe",
+                                  @"C:\Riot Games\League of Legends\LeagueClient.exe", @"C:\Riot Games\League of Legends\LeagueClientUx.exe",
+                                  @"C:\Riot Games\League of Legends\LeagueClientUxRender.exe", @"C:\Riot Games\Riot Client\UX\RiotClientUx.exe",
                                   @"C:\Games\Old.exe", @"C:\Tools\Legacy\setup-tool.exe", @"C:\Program Files\Notes\notes.exe" })
             d[p] = new List<int> { 1 };
         return d;
@@ -1273,7 +1726,8 @@ class MainForm : Form
     static Awareness DemoAwareness(string path)
     {
         if (path.EndsWith("steam.exe")) return Awareness.System;
-        if (path.EndsWith("LeagueClient.exe")) return Awareness.PerMonitorV2;
+        if (path.EndsWith("LeagueClient.exe") || path.EndsWith("LeagueClientUx.exe")) return Awareness.PerMonitorV2;
+        if (path.EndsWith("LeagueClientUxRender.exe") || path.EndsWith("steamwebhelper.exe")) return Awareness.Unaware;
         if (path.EndsWith("Old.exe")) return Awareness.GdiScaled;
         if (path.EndsWith("setup-tool.exe")) return Awareness.Unaware;
         return Awareness.PerMonitor;
@@ -1287,9 +1741,10 @@ class MainForm : Form
 
     void Apply()
     {
-        var items = list.SelectedItems.Cast<ListViewItem>().Select(i => (Entry)i.Tag).ToList();
+        var items = SelectedEntries();
         if (items.Count == 0) return;
         string mode = ModeKeys[modes.Selected];
+        string groupName = SelectedGroupName();
 
         var errors = new List<string>();
         var done = new List<string>();
@@ -1309,8 +1764,7 @@ class MainForm : Form
             }
         }
         var paths = items.Select(i => i.Path).ToList();
-        Reload();
-        FillList(paths);
+        Reload(paths);
 
         if (errors.Count > 0)
         {
@@ -1319,11 +1773,11 @@ class MainForm : Form
         }
         else if (done.Count > 0)
         {
-            string what = done.Count == 1 ? done[0] : done.Count + " programs";
+            string what = done.Count == 1 ? done[0] : groupName != null ? groupName + " (" + done.Count + " programs)" : done.Count + " programs";
             string m = mode == "Not set" ? "Override removed for " + what : modes.Items[modes.Selected] + " scaling set for " + what;
             var runningApplied = entries.Where(en => paths.Contains(en.Path, StringComparer.OrdinalIgnoreCase) && en.Running).ToList();
             if (runningApplied.Count > 0)
-                ShowSnack(m + ". Restart to apply.", false, "RESTART", () => RestartEntries(runningApplied));
+                ShowSnack(m + ". Restart to apply.", false, "RESTART", () => RestartEntries(runningApplied, groupName));
             else
                 ShowSnack(m + ".", false);
         }
