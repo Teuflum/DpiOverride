@@ -277,6 +277,12 @@ static class ShellPackage
 
     public static bool OnWindows11 { get { return Environment.OSVersion.Platform == PlatformID.Win32NT && WindowsBuild() >= 22000; } }
 
+    // Everything is there except Developer Mode (Settings > System > For developers)
+    public static bool NeedsDeveloperMode
+    {
+        get { return OnWindows11 && File.Exists(Path.Combine(AppDir, Dll)) && !DeveloperMode(); }
+    }
+
     // Why it can't be added here, or null
     public static string Unavailable()
     {
