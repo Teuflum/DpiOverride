@@ -290,22 +290,14 @@ static class Restarter
 
     // Closes every instance of the programs (politely first, then forcefully) and starts them again with their
     // original arguments. A program that was started by another one in the list (e.g. a game client's helper)
-    // is left for that program to start again. Returns the errors as "name: message".
+    // is left for that program to start again. So is a background helper (no window, no processes of its own,
+    // e.g. DiscordSystemHelper) when the list has a real program: those start their helpers themselves, with
+    // fresh arguments. Returns the errors as "name: message".
     public static List<string> RestartAll(List<Job> jobs)
     {
         var errors = new List<string>();
         jobs = jobs.Where(j => j.Pids.Count > 0).ToList();
-        foreach (var j in jobs)
-        {
-            j.Main = MainOf(j.Pids);
-            j.Args = ArgumentsOf(CommandLineOf(j.Main));
-            j.Elevated = IsElevated(j.Main);
-            j.Parent = ParentOf(j.Main);
-        }
-        var starts = jobs.Where(j => !jobs.Any(o => o != j && o.Pids.Contains(j.Parent))).ToList();
-        foreach (var j in jobs)
-            Program.Log("restart " + j.Exe + " args=[" + j.Args + "] elevated=" + j.Elevated +
-                        (starts.Contains(j) ? "" : " (started by another program in the list, not starting it)"));
+        var starts = Plan(jobs);
 
         var procs = new List<KeyValuePair<Job, Process>>();
         foreach (var j in jobs)
@@ -344,6 +336,31 @@ static class Restarter
             catch (Exception ex) { errors.Add(j.Display + ": couldn't start it again: " + ex.Message); }
         }
         return errors;
+    }
+
+    // Reads how each program was started and returns the ones to start again (see RestartAll)
+    internal static List<Job> Plan(List<Job> jobs)
+    {
+        var windows = DpiInfo.WindowOwners();
+        var primary = new HashSet<Job>();
+        foreach (var j in jobs)
+        {
+            j.Main = MainOf(j.Pids);
+            j.Args = ArgumentsOf(CommandLineOf(j.Main));
+            j.Elevated = IsElevated(j.Main);
+            j.Parent = ParentOf(j.Main);
+            if (j.Pids.Any(windows.Contains) || j.Pids.Any(pid => pid != j.Main && ParentOf(pid) == j.Main)) primary.Add(j);
+        }
+        foreach (var j in jobs)
+            if (jobs.Any(o => o != j && j.Pids.Contains(o.Parent))) primary.Add(j);   // it starts another program in the list
+        var starts = jobs.Where(j => !jobs.Any(o => o != j && o.Pids.Contains(j.Parent))).ToList();
+        var helpers = starts.Any(primary.Contains) ? starts.Where(j => !primary.Contains(j)).ToList() : new List<Job>();
+        starts = starts.Except(helpers).ToList();
+        foreach (var j in jobs)
+            Program.Log("restart " + j.Exe + " args=[" + j.Args + "] elevated=" + j.Elevated +
+                        (starts.Contains(j) ? "" : helpers.Contains(j) ? " (background helper, not starting it)"
+                                                                       : " (started by another program in the list, not starting it)"));
+        return starts;
     }
 }
 
