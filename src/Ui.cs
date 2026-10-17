@@ -113,7 +113,7 @@ static class Theme
                         GMore = "\uE712", GSave = "\uE74E", GOpenFile = "\uE8E5", GUndo = "\uE7A7",
                         GPeople = "\uE716", GPerson = "\uE77B", GShield = "\uEA18";
 
-    public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall;
+    public static Font Body, BodyStrong, Small, SmallStrong, Title, Subtitle, Label, Icon, IconSmall, MenuIcon;
     public static bool HasIcons;
 
     // Icon glyphs (Segoe Fluent Icons / Segoe MDL2 Assets)
@@ -140,6 +140,7 @@ static class Theme
         HasIcons = icons != null;
         Icon = new Font(icons ?? ui, 12f);
         IconSmall = new Font(icons ?? ui, 9f);
+        MenuIcon = new Font(icons ?? ui, 13f);   // about 18 dp of glyph in the 24 dp icon box
     }
 
     public static GraphicsPath Round(RectangleF r, float rad)
@@ -191,11 +192,11 @@ static class Theme
             g.DrawLines(pen, pts);
     }
 
-    // An icon-font glyph as a bitmap (for menu items); null without the icon font
+    // An icon-font glyph as a 24 dp bitmap (for menu items, Material's icon size); null without the icon font
     public static Bitmap GlyphImage(string glyph, Color c)
     {
         if (!HasIcons) return null;
-        int s = Dp(20), big = s * 2;
+        int s = Dp(24), big = s * 2;
         // Drawn on a larger canvas first, then the visible pixels are centered: the icon font's line box
         // doesn't sit centered on the glyph, which put menu icons a few pixels above their text
         using (var tmp = new Bitmap(big, big))
@@ -205,7 +206,7 @@ static class Theme
                 g.TextRenderingHint = TextRenderingHint.AntiAliasGridFit;
                 using (var br = new SolidBrush(c))
                 using (var sf = new StringFormat { Alignment = StringAlignment.Center, LineAlignment = StringAlignment.Center })
-                    g.DrawString(glyph, IconSmall, br, new RectangleF(0, 0, big, big), sf);
+                    g.DrawString(glyph, MenuIcon, br, new RectangleF(0, 0, big, big), sf);
             }
             int x0 = big, y0 = big, x1 = -1, y1 = -1;
             for (int y = 0; y < big; y++)
@@ -319,7 +320,7 @@ class MControl : Control
     protected float StateAlpha { get { return !Enabled ? 0f : Pressed ? 0.12f : Hover ? 0.08f : 0f; } }
 }
 
-enum ButtonKind { Filled, Tonal, Text }
+enum ButtonKind { Filled, Tonal, Text, Outlined }
 
 class MButton : MControl
 {
@@ -346,11 +347,14 @@ class MButton : MControl
         {
             case ButtonKind.Filled: bg = Theme.Primary; fg = Theme.OnPrimary; break;
             case ButtonKind.Tonal: bg = Theme.SecondaryContainer; fg = Theme.OnSecondaryContainer; break;
+            case ButtonKind.Outlined: bg = Color.Transparent; fg = Theme.OnSurface; break;   // matches the segmented buttons
             default: bg = Color.Transparent; fg = ContentOverride ?? Theme.Primary; break;
         }
+        if (Kind == ButtonKind.Outlined)
+            Theme.StrokeRound(g, Enabled ? Theme.Outline : Theme.Alpha(Theme.OnSurface, 0.12f), Math.Max(1f, Theme.S), r, rad);
         if (!Enabled)
         {
-            bg = Kind == ButtonKind.Text ? Color.Transparent : Theme.Alpha(Theme.OnSurface, 0.12f);
+            bg = Kind == ButtonKind.Text || Kind == ButtonKind.Outlined ? Color.Transparent : Theme.Alpha(Theme.OnSurface, 0.12f);
             fg = Theme.Alpha(Theme.OnSurface, 0.38f);
             fg = Theme.Mix(Theme.SurfaceContainer, Theme.OnSurface, 0.38f);
         }
@@ -372,27 +376,65 @@ class MButton : MControl
     }
 }
 
-// Material-style popup menu
+// Material 3 menu: rounded container with the system's soft shadow and no border, 8 dp padding at the top and
+// bottom, 44 dp items with a 24 dp leading icon (12 dp in, 12 dp before the text), a full-width hover layer,
+// dividers with 8 dp around them, and the current choice (Checked) filled with the secondary container color
 class MMenu : ContextMenuStrip
 {
     [DllImport("dwmapi.dll")]
     static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
 
+    // Layout in dp
+    internal const int SidePad = 12, IconBox = 24, IconGap = 12, ItemHeight = 44, DividerPad = 8;
+    internal static int TextX(bool icons) { return Theme.Dp(icons ? SidePad + IconBox + IconGap : SidePad + 4); }
+
     public MMenu()
     {
         Renderer = new MenuRenderer();
+        DropShadowEnabled = true;
         Style();
     }
 
     // Menus are often created as fields, before Theme.Init knows the display scale, so the style is applied again
     // every time the menu opens
-    void Style()
+    // ToolStripDropDownMenu resets its Padding when it lays out (left = its image margin) and takes top and bottom
+    // from here
+    protected override Padding DefaultPadding { get { return new Padding(0, Theme.Dp(8), 0, Theme.Dp(8)); } }
+
+    // Sizes are set here, before the menu is measured: it measures items itself (ignoring their padding), and
+    // changing them while it opens is too late. Items get a fixed Material height, and the menu a minimum width
+    // that fits the text at its Material position (TextX) plus the shortcut.
+    void Sizes()
     {
         Font = Theme.Body;
-        BackColor = Theme.SurfaceContainer;
         ShowImageMargin = Theme.HasIcons;
-        ImageScalingSize = new Size(Theme.Dp(20), Theme.Dp(20));
-        Padding = new Padding(0, Theme.Dp(6), 0, Theme.Dp(6));
+        ShowCheckMargin = false;
+        ImageScalingSize = new Size(Theme.Dp(IconBox), Theme.Dp(IconBox));
+        int width = Theme.Dp(112);
+        foreach (ToolStripItem it in Items)
+        {
+            it.AutoSize = false;
+            it.Padding = Padding.Empty;
+            if (it is ToolStripSeparator) { it.Height = Theme.Dp(DividerPad * 2 + 1); continue; }
+            it.Height = Theme.Dp(ItemHeight);
+            if (!it.Available) continue;
+            int w = TextX(ShowImageMargin) + TextRenderer.MeasureText(it.Text, Theme.Body).Width + Theme.Dp(SidePad);
+            var mi = it as ToolStripMenuItem;
+            if (mi != null && mi.ShowShortcutKeys && !string.IsNullOrEmpty(mi.ShortcutKeyDisplayString))
+                w += Theme.Dp(32) + TextRenderer.MeasureText(mi.ShortcutKeyDisplayString, Theme.Body).Width;
+            width = Math.Max(width, Math.Min(w, Theme.Dp(400)));
+        }
+        MinimumSize = new Size(width, 0);
+        foreach (ToolStripItem it in Items) it.Width = width;
+    }
+
+    // Shown through these so the sizes fit the current texts (set just before showing)
+    public new void Show(Control c, Point p, ToolStripDropDownDirection d) { Sizes(); base.Show(c, p, d); }
+    public new void Show(Control c, Point p) { Sizes(); base.Show(c, p); }
+
+    void Style()
+    {
+        BackColor = Theme.SurfaceContainer;
         // icons are bitmaps in the theme's color: redraw them after a switch between light and dark
         if (iconColor != Theme.OnSurfaceVariant)
         {
@@ -416,7 +458,13 @@ class MMenu : ContextMenuStrip
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        try { int round = 3 /* DWMWCP_ROUNDSMALL */; DwmSetWindowAttribute(Handle, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, ref round, 4); }
+        try
+        {
+            int round = 2 /* DWMWCP_ROUND */;
+            DwmSetWindowAttribute(Handle, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, ref round, 4);
+            int none = unchecked((int)0xFFFFFFFE) /* DWMWA_COLOR_NONE */;
+            DwmSetWindowAttribute(Handle, 34 /* DWMWA_BORDER_COLOR */, ref none, 4);   // elevation by shadow, not a line
+        }
         catch { }
     }
 
@@ -424,9 +472,9 @@ class MMenu : ContextMenuStrip
     {
         var it = new ToolStripMenuItem(text) { Image = glyph != null ? Theme.GlyphImage(glyph, Theme.OnSurfaceVariant) : null, Tag = glyph };
         it.Font = Theme.Body;
-        it.Padding = new Padding(Theme.Dp(4), Theme.Dp(7), Theme.Dp(16), Theme.Dp(7));
         it.Click += (s, e) => onClick();
         Items.Add(it);
+        Sizes();
         return it;
     }
 
@@ -434,6 +482,7 @@ class MMenu : ContextMenuStrip
     {
         var sep = new ToolStripSeparator();
         Items.Add(sep);
+        Sizes();
         return sep;
     }
 
@@ -443,53 +492,55 @@ class MMenu : ContextMenuStrip
 
         protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e) { e.Graphics.Clear(Theme.SurfaceContainer); }
 
-        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
-        {
-            using (var pen = new Pen(Theme.OutlineVariant))
-                e.Graphics.DrawRectangle(pen, 0, 0, e.AffectedBounds.Width - 1, e.AffectedBounds.Height - 1);
-        }
-
+        protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e) { }
         protected override void OnRenderImageMargin(ToolStripRenderEventArgs e) { }
+        protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e) { }   // shown by the fill instead
 
-        // Centered in the item, like the text (the default places it by the item's padding). One dp lower, because
-        // Segoe UI's capitals sit about 0.06 em below the center of the line box the text is centered by.
+        static bool IsChecked(ToolStripItem it) { var mi = it as ToolStripMenuItem; return mi != null && mi.Checked; }
+
+        // In a 24 dp box 12 dp from the edge, centered on the text (1 dp lower: Segoe UI's capitals sit about
+        // 0.06 em below the center of the line box the text is centered by)
         protected override void OnRenderItemImage(ToolStripItemImageRenderEventArgs e)
         {
             var img = e.Image;
             if (img == null) return;
-            var r = e.ImageRectangle;
-            var dst = new Rectangle(r.X + (r.Width - img.Width) / 2, (e.Item.Height - img.Height) / 2 + Theme.Dp(1), img.Width, img.Height);
+            int box = Theme.Dp(IconBox);
+            var dst = new Rectangle(Theme.Dp(SidePad) + (box - img.Width) / 2, (e.Item.Height - img.Height) / 2 + Theme.Dp(1), img.Width, img.Height);
             if (e.Item.Enabled) e.Graphics.DrawImage(img, dst);
             else ControlPaint.DrawImageDisabled(e.Graphics, img, dst.X, dst.Y, Theme.SurfaceContainer);
         }
 
+        // Full width, as in Material menus: the current choice filled, hover as an 8 % state layer on top
         protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
         {
-            if (!e.Item.Selected || !e.Item.Enabled) return;
-            var g = e.Graphics; Theme.Hq(g);
-            var r = new RectangleF(Theme.Dp(4), 0, e.Item.Width - Theme.Dp(8), e.Item.Height);
-            Theme.FillRound(g, Theme.Alpha(Theme.OnSurface, 0.08f), r, Theme.Dp(6));
+            var r = new Rectangle(0, 0, e.Item.Width, e.Item.Height);
+            if (IsChecked(e.Item)) using (var b = new SolidBrush(Theme.SecondaryContainer)) e.Graphics.FillRectangle(b, r);
+            if (e.Item.Selected && e.Item.Enabled) using (var b = new SolidBrush(Theme.Alpha(Theme.OnSurface, 0.08f))) e.Graphics.FillRectangle(b, r);
         }
 
-        // Drawn here because the default text rectangle sits above the icon when the item has vertical padding
+        // Drawn here: Material spacing instead of WinForms' text position, and centered with the icon
         protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
         {
-            var color = e.Item.Enabled ? Theme.OnSurface : Theme.Mix(Theme.SurfaceContainer, Theme.OnSurface, 0.38f);
             var flags = TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine | TextFormatFlags.VerticalCenter;
-            if (e.Text != e.Item.Text)   // the shortcut ("Ctrl+Z"): right-aligned in its own rectangle, muted
+            if (e.Text != e.Item.Text)   // the shortcut ("Ctrl+Z"): right-aligned, muted
             {
-                var sr = new Rectangle(e.TextRectangle.X, 0, e.TextRectangle.Width, e.Item.Height);
+                var sr = new Rectangle(0, 0, e.Item.Width - Theme.Dp(SidePad), e.Item.Height);
                 TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, sr, Theme.OnSurfaceVariant, flags | TextFormatFlags.Right);
                 return;
             }
-            var r = new Rectangle(e.TextRectangle.X, 0, e.TextRectangle.Width, e.Item.Height);
+            Color color = !e.Item.Enabled ? Theme.Mix(Theme.SurfaceContainer, Theme.OnSurface, 0.38f)
+                        : IsChecked(e.Item) ? Theme.OnSecondaryContainer : Theme.OnSurface;
+            var owner = e.Item.Owner as ToolStripDropDownMenu;
+            int x = TextX(owner == null || owner.ShowImageMargin);
+            var r = new Rectangle(x, 0, e.Item.Width - x - Theme.Dp(SidePad), e.Item.Height);
             TextRenderer.DrawText(e.Graphics, e.Text, e.TextFont, r, color, flags | TextFormatFlags.Left | TextFormatFlags.EndEllipsis);
         }
 
+        // Full width with 8 dp above and below
         protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
         {
             int y = e.Item.Height / 2;
-            using (var pen = new Pen(Theme.OutlineVariant)) e.Graphics.DrawLine(pen, Theme.Dp(12), y, e.Item.Width - Theme.Dp(12), y);
+            using (var pen = new Pen(Theme.OutlineVariant)) e.Graphics.DrawLine(pen, 0, y, e.Item.Width, y);
         }
     }
 }
@@ -892,6 +943,7 @@ class MainForm : Form
     readonly MMenu rowMenu = new MMenu();
     readonly MButton btnScope = new MButton();
     readonly MMenu scopeMenu = new MMenu();
+    ToolStripMenuItem scopeAll, scopeMe;
     readonly ToolTip applyTip = new ToolTip();
     bool allUsersScope = true;   // Apply sets the override for all users (asks for admin rights) or only for the current user
     ToolStripMenuItem rowOpen, rowCopy, rowRestart, rowRemove;
@@ -1071,10 +1123,10 @@ class MainForm : Form
         btnRestart.Enabled = false;
         btnRestart.Click += (s, e) => RestartSelected();
         new ToolTip().SetToolTip(btnRestart, "Close and reopen the selected running programs so a new setting takes effect");
-        btnScope.Kind = ButtonKind.Text; btnScope.DropDown = true;
+        btnScope.Kind = ButtonKind.Outlined; btnScope.DropDown = true;
         btnScope.Click += (s, e) => scopeMenu.Show(btnScope, new Point(0, -Dp(4)), ToolStripDropDownDirection.AboveRight);
-        scopeMenu.Add("For all users (asks for administrator rights)", Theme.GPeople, () => SetScope(true));
-        scopeMenu.Add("Only for me (no administrator rights needed)", Theme.GPerson, () => SetScope(false));
+        scopeAll = scopeMenu.Add("For all users (asks for administrator rights)", Theme.GPeople, () => SetScope(true));
+        scopeMe = scopeMenu.Add("Only for me (no administrator rights needed)", Theme.GPerson, () => SetScope(false));
         new ToolTip().SetToolTip(btnScope, "Who the setting is for");
         allUsersScope = LoadScope();
         bottom.Controls.AddRange(new Control[] { btnScope, modes, btnRestart, btnApply });
@@ -2366,6 +2418,7 @@ class MainForm : Form
     void UpdateScopeUi()
     {
         btnScope.Text = allUsersScope ? "All users" : "Only me";
+        scopeAll.Checked = allUsersScope; scopeMe.Checked = !allUsersScope;   // filled in the menu
         btnScope.Glyph = allUsersScope ? Theme.GPeople : Theme.GPerson;
         // Windows' shield on buttons that ask for admin rights
         bool asks = allUsersScope && Environment.OSVersion.Platform == PlatformID.Win32NT && !Program.IsAdmin();
