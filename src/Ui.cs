@@ -839,21 +839,40 @@ class Snackbar : Control
 }
 
 // Material-style confirmation dialog
+// Material dialog: no window title bar, rounded corners with a shadow, the raised surface color. Esc, Enter and the
+// buttons close it; it can be moved by dragging it anywhere.
 class ConfirmDialog : Form
 {
     readonly string title, body;
 
+    [DllImport("dwmapi.dll")]
+    static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int value, int size);
+    [DllImport("user32.dll")]
+    static extern bool ReleaseCapture();
+    [DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr hWnd, int msg, IntPtr wParam, IntPtr lParam);
+
     ConfirmDialog(string title, string body, string okText)
     {
         this.title = title; this.body = body;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        FormBorderStyle = FormBorderStyle.None;
         MaximizeBox = false; MinimizeBox = false; ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterParent;
-        BackColor = Theme.SurfaceContainer;
+        BackColor = Theme.SurfaceContainerHigh;
         Font = Theme.Body;
-        Text = "DPI Override";
+        Text = "DPI Override";   // not shown; for the accessibility tools
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
-        HandleCreated += (s, e) => { Theme.Frame(Handle); Theme.Caption(Handle, Theme.SurfaceContainer, Theme.OnSurface); };
+        HandleCreated += (s, e) =>
+        {
+            try
+            {
+                int round = 2 /* DWMWCP_ROUND */;
+                DwmSetWindowAttribute(Handle, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, ref round, 4);
+                int none = unchecked((int)0xFFFFFFFE) /* DWMWA_COLOR_NONE */;
+                DwmSetWindowAttribute(Handle, 34 /* DWMWA_BORDER_COLOR */, ref none, 4);
+            }
+            catch { }
+        };
 
         int w = Theme.Dp(440);
         int textW = w - Theme.Dp(48);
@@ -877,10 +896,25 @@ class ConfirmDialog : Form
         };
     }
 
+    // A soft shadow around the borderless window (Windows 11 rounds it with the corners)
+    protected override CreateParams CreateParams
+    {
+        get { var cp = base.CreateParams; cp.ClassStyle |= 0x20000 /* CS_DROPSHADOW */; return cp; }
+    }
+
+    // Moved by dragging it anywhere, as there's no title bar
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (e.Button != MouseButtons.Left) return;
+        ReleaseCapture();
+        SendMessage(Handle, 0x00A1 /* WM_NCLBUTTONDOWN */, (IntPtr)2 /* HTCAPTION */, IntPtr.Zero);
+    }
+
     protected override void OnPaint(PaintEventArgs e)
     {
         var g = e.Graphics;
-        g.Clear(Theme.SurfaceContainer);
+        g.Clear(Theme.SurfaceContainerHigh);
         int x = Theme.Dp(24), w = ClientSize.Width - Theme.Dp(48);
         Theme.Text(g, title, Theme.Title, new Rectangle(x, Theme.Dp(22), w, Theme.Dp(34)), Theme.OnSurface);
         TextRenderer.DrawText(g, body, Theme.Body, new Rectangle(x, Theme.Dp(72), w, ClientSize.Height - Theme.Dp(72 + 80)),
