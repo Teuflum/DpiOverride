@@ -798,6 +798,13 @@ static class Program
     {
         bool onWindows = Environment.OSVersion.Platform == PlatformID.Win32NT;
 
+        // Already open: hand the paths to that window (no second window, no second UAC prompt)
+        if (onWindows && !Demo && SingleInstance.Send(StartPaths))
+        {
+            Log("handed " + StartPaths.Count + " path(s) to the open window");
+            return 0;
+        }
+
         // Writing the all-users setting needs admin rights: relaunch elevated (UAC prompt)
         if (onWindows && !IsAdmin())
         {
