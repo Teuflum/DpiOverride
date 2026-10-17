@@ -237,6 +237,211 @@ static class ExplorerMenu
     }
 }
 
+// The same entry in Windows 11's compact context menu. Only apps with package identity can add entries there, so the
+// app registers a sparse package for the current user: a manifest (with its logos, in %LOCALAPPDATA%\DpiOverride\
+// ShellMenu) whose content is the app's own folder (-ExternalLocation) and which declares DpiOverrideShell.dll
+// (shellext\) as the menu entry. Windows only accepts the unsigned package in Developer Mode.
+static class ShellPackage
+{
+    public const string Name = "DpiOverride.ShellMenu";
+    const string Clsid = "609A4A05-67E8-4286-9B12-8C7307118B8D";   // also in shellext\DpiOverrideShell.cpp
+    public const string Dll = "DpiOverrideShell.dll";
+    const string SettingsKey = @"Software\DpiOverride";
+
+    static string AppDir { get { return Path.GetDirectoryName(Application.ExecutablePath); } }
+    static string PackageDir
+    {
+        get { return Path.Combine(Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "DpiOverride"), "ShellMenu"); }
+    }
+
+    // Environment.OSVersion says 6.2 without an app manifest, so the build number comes from the registry
+    static int WindowsBuild()
+    {
+        try
+        {
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows NT\CurrentVersion"))
+                return int.Parse(Convert.ToString(k.GetValue("CurrentBuildNumber")));
+        }
+        catch { return 0; }
+    }
+
+    static bool DeveloperMode()
+    {
+        try
+        {
+            using (var k = Registry.LocalMachine.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\AppModelUnlock"))
+                return k != null && Convert.ToInt32(k.GetValue("AllowDevelopmentWithoutDevLicense", 0)) == 1;
+        }
+        catch { return false; }
+    }
+
+    public static bool OnWindows11 { get { return Environment.OSVersion.Platform == PlatformID.Win32NT && WindowsBuild() >= 22000; } }
+
+    // Everything is there except Developer Mode (Settings > System > For developers)
+    public static bool NeedsDeveloperMode
+    {
+        get { return OnWindows11 && File.Exists(Path.Combine(AppDir, Dll)) && !DeveloperMode(); }
+    }
+
+    // Why it can't be added here, or null
+    public static string Unavailable()
+    {
+        if (!OnWindows11) return "it's only on Windows 11";
+        if (!File.Exists(Path.Combine(AppDir, Dll))) return Dll + " isn't next to the program (build it with the Visual Studio C++ build tools)";
+        if (!DeveloperMode()) return "Windows only accepts it in Developer Mode";
+        return null;
+    }
+
+    public static bool Registered()
+    {
+        try
+        {
+            using (var k = Registry.CurrentUser.OpenSubKey(@"Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages"))
+                return k != null && k.GetSubKeyNames().Any(n => n.StartsWith(Name + "_", StringComparison.OrdinalIgnoreCase));
+        }
+        catch { return false; }
+    }
+
+    // Registers (again) for this folder; null, or the error. Takes a few seconds (PowerShell's Add-AppxPackage).
+    public static string Register()
+    {
+        try { WriteFiles(); }
+        catch (Exception ex) { return "couldn't write the package files: " + ex.Message; }
+        string error = PowerShell("Get-AppxPackage -Name " + Quote(Name) + " | Remove-AppxPackage; " +
+                                  "Add-AppxPackage -Register " + Quote(Path.Combine(PackageDir, "AppxManifest.xml")) +
+                                  " -ExternalLocation " + Quote(AppDir));
+        if (error == null)
+        {
+            try { using (var k = Registry.CurrentUser.CreateSubKey(SettingsKey)) k.SetValue("ShellMenuDir", AppDir); } catch { }
+            Program.Log("registered the Windows 11 menu package for " + AppDir);
+        }
+        else Program.Log("Windows 11 menu package failed: " + error);
+        return error;
+    }
+
+    public static string Unregister()
+    {
+        string error = PowerShell("Get-AppxPackage -Name " + Quote(Name) + " | Remove-AppxPackage");
+        Program.Log(error == null ? "removed the Windows 11 menu package" : "removing the Windows 11 menu package failed: " + error);
+        return error;
+    }
+
+    // After the program was moved: registers it for the new folder (in the background, it takes a few seconds)
+    public static void KeepCurrent()
+    {
+        try
+        {
+            string dir;
+            using (var k = Registry.CurrentUser.OpenSubKey(SettingsKey)) dir = k == null ? null : Convert.ToString(k.GetValue("ShellMenuDir"));
+            if (dir == null || string.Equals(dir, AppDir, StringComparison.OrdinalIgnoreCase) || !Registered() || Unavailable() != null) return;
+            new System.Threading.Thread(() => Register()).Start();
+        }
+        catch (Exception ex) { Program.Log("couldn't update the Windows 11 menu package: " + ex.Message); }
+    }
+
+    static string Quote(string s) { return "'" + s.Replace("'", "''") + "'"; }
+
+    // Windows PowerShell (its Appx module); null, or the first line of the error
+    static string PowerShell(string script)
+    {
+        try
+        {
+            var psi = new ProcessStartInfo("powershell.exe",
+                "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"$ErrorActionPreference = 'Stop'; " + script + "\"")
+                { UseShellExecute = false, CreateNoWindow = true, RedirectStandardError = true };
+            using (var p = Process.Start(psi))
+            {
+                string err = p.StandardError.ReadToEnd();
+                p.WaitForExit();
+                if (p.ExitCode == 0 && err.Trim().Length == 0) return null;
+                string first = err.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries).FirstOrDefault();
+                return first != null ? first.Trim() : "PowerShell exit code " + p.ExitCode;
+            }
+        }
+        catch (Exception ex) { return ex.Message; }
+    }
+
+    static void WriteFiles()
+    {
+        string assets = Path.Combine(PackageDir, "Assets");
+        Directory.CreateDirectory(assets);
+        File.WriteAllText(Path.Combine(PackageDir, "AppxManifest.xml"), Manifest(), new UTF8Encoding(false));
+        using (var s = typeof(ShellPackage).Assembly.GetManifestResourceStream("logo.png"))
+        using (var logo = new Bitmap(s))
+        {
+            foreach (var size in new[] { new KeyValuePair<string, int>("StoreLogo.png", 50), new KeyValuePair<string, int>("Square44x44Logo.png", 44),
+                                         new KeyValuePair<string, int>("Square150x150Logo.png", 150) })
+                using (var b = new Bitmap(size.Value, size.Value))
+                {
+                    using (var g = Graphics.FromImage(b))
+                    {
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.DrawImage(logo, 0, 0, size.Value, size.Value);
+                    }
+                    b.Save(Path.Combine(assets, size.Key), System.Drawing.Imaging.ImageFormat.Png);
+                }
+        }
+    }
+
+    // A sparse package: no files of its own besides the logos; DpiOverride.exe and the DLL are in -ExternalLocation
+    static string Manifest()
+    {
+        return @"<?xml version=""1.0"" encoding=""utf-8""?>
+<Package xmlns=""http://schemas.microsoft.com/appx/manifest/foundation/windows10""
+         xmlns:uap=""http://schemas.microsoft.com/appx/manifest/uap/windows10""
+         xmlns:uap10=""http://schemas.microsoft.com/appx/manifest/uap/windows10/10""
+         xmlns:desktop4=""http://schemas.microsoft.com/appx/manifest/desktop/windows10/4""
+         xmlns:desktop5=""http://schemas.microsoft.com/appx/manifest/desktop/windows10/5""
+         xmlns:com=""http://schemas.microsoft.com/appx/manifest/com/windows10""
+         xmlns:rescap=""http://schemas.microsoft.com/appx/manifest/foundation/windows10/restrictedcapabilities""
+         IgnorableNamespaces=""uap uap10 desktop4 desktop5 com rescap"">
+  <Identity Name=""" + Name + @""" Publisher=""CN=DpiOverride"" Version=""1.0.0.0"" ProcessorArchitecture=""x64"" />
+  <Properties>
+    <DisplayName>DPI Override</DisplayName>
+    <PublisherDisplayName>DPI Override</PublisherDisplayName>
+    <Logo>Assets\StoreLogo.png</Logo>
+    <uap10:AllowExternalContent>true</uap10:AllowExternalContent>
+  </Properties>
+  <Resources>
+    <Resource Language=""en-us"" />
+  </Resources>
+  <Dependencies>
+    <TargetDeviceFamily Name=""Windows.Desktop"" MinVersion=""10.0.22000.0"" MaxVersionTested=""10.0.26100.0"" />
+  </Dependencies>
+  <Capabilities>
+    <rescap:Capability Name=""runFullTrust"" />
+    <rescap:Capability Name=""unvirtualizedResources"" />
+  </Capabilities>
+  <Applications>
+    <Application Id=""DpiOverride"" Executable=""DpiOverride.exe"" uap10:TrustLevel=""mediumIL"" uap10:RuntimeBehavior=""win32App"">
+      <uap:VisualElements DisplayName=""DPI Override"" Description=""DPI scaling override"" BackgroundColor=""transparent""
+                          Square150x150Logo=""Assets\Square150x150Logo.png"" Square44x44Logo=""Assets\Square44x44Logo.png"" AppListEntry=""none"" />
+      <Extensions>
+        <desktop4:Extension Category=""windows.fileExplorerContextMenus"">
+          <desktop4:FileExplorerContextMenus>
+            <desktop5:ItemType Type="".exe"">
+              <desktop5:Verb Id=""DpiOverride"" Clsid=""" + Clsid + @""" />
+            </desktop5:ItemType>
+            <desktop5:ItemType Type="".lnk"">
+              <desktop5:Verb Id=""DpiOverride"" Clsid=""" + Clsid + @""" />
+            </desktop5:ItemType>
+          </desktop4:FileExplorerContextMenus>
+        </desktop4:Extension>
+        <com:Extension Category=""windows.comServer"">
+          <com:ComServer>
+            <com:SurrogateServer DisplayName=""DPI Override menu entry"">
+              <com:Class Id=""" + Clsid + @""" Path=""" + Dll + @""" ThreadingModel=""STA"" />
+            </com:SurrogateServer>
+          </com:ComServer>
+        </com:Extension>
+      </Extensions>
+    </Application>
+  </Applications>
+</Package>
+";
+    }
+}
+
 // One registry change that can be undone: the exact values before and after
 class UndoStep
 {
@@ -997,7 +1202,7 @@ static class Program
         }
 
         // Here rather than in MainForm, so test programs that open the window don't point the entry at themselves
-        if (onWindows && !Demo) ExplorerMenu.KeepCurrent(Application.ExecutablePath);
+        if (onWindows && !Demo) { ExplorerMenu.KeepCurrent(Application.ExecutablePath); ShellPackage.KeepCurrent(); }
 
         // The app runs as the normal user; only changes for all users ask for admin rights (AllUsers.Set)
         if (onWindows) { try { SetProcessDPIAware(); } catch { } }

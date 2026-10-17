@@ -1018,7 +1018,8 @@ class MainForm : Form
             bool onWindows = Environment.OSVersion.Platform == PlatformID.Win32NT;
             explorerItem.Visible = explorerSep.Visible = onWindows;
             string label = "“" + ExplorerMenu.Label + "”";
-            if (onWindows) explorerItem.Text = ExplorerEntryOn() ? "Remove " + label + " from Explorer" : "Add " + label + " to Explorer";
+            if (onWindows) explorerItem.Text = OnlyCompactMenuMissing() ? "Add " + label + " to Windows 11's menu"
+                                             : ExplorerEntryOn() ? "Remove " + label + " from Explorer" : "Add " + label + " to Explorer";
             moreMenu.Show(btnMore, new Point(btnMore.Width, btnMore.Height + Dp(4)), ToolStripDropDownDirection.BelowLeft);
         };
         appBar.Controls.Add(btnMore);
@@ -2065,12 +2066,18 @@ class MainForm : Form
     // ---------- Explorer's right-click menu ----------
     static bool ExplorerEntryOn()
     {
-        try { return ExplorerMenu.Registered() != null || ExplorerMenu.AllUsersRegistered(); }
+        try { return ExplorerMenu.Registered() != null || ExplorerMenu.AllUsersRegistered() || ShellPackage.Registered(); }
         catch { return false; }
     }
 
+    bool shellPackageBusy;
+
+    // The classic entry (instant) and, on Windows 11, the compact menu's package (a few seconds, in the background)
     void ToggleExplorerMenu()
     {
+        if (shellPackageBusy) return;
+        string label = "“" + ExplorerMenu.Label + "”";
+        if (OnlyCompactMenuMissing()) { ChangeShellPackage(false, label); return; }   // e.g. Developer Mode was turned on since
         bool on = ExplorerEntryOn();
         try
         {
@@ -2085,16 +2092,63 @@ class MainForm : Form
                 }
             }
             else ExplorerMenu.Register(Application.ExecutablePath);
-            Program.Log((on ? "removed" : "added") + " the Explorer entry");
-            string label = "“" + ExplorerMenu.Label + "”";
-            ShowSnack(on ? "Removed " + label + " from Explorer"
-                         : "Right-click a program or shortcut in Explorer and choose " + label + " (on Windows 11 under Show more options)", false);
+            Program.Log((on ? "removed" : "added") + " the classic Explorer entry");
         }
         catch (Exception ex)
         {
             Program.Log("Explorer entry change failed: " + ex);
             ShowSnack("Couldn't change the Explorer menu: " + ex.Message, true);
+            return;
         }
+
+        string why = ShellPackage.Unavailable();
+        bool package = on ? ShellPackage.Registered() : why == null;
+        if (!package)
+        {
+            if (on) ShowSnack("Removed " + label + " from Explorer", false);
+            else if (ShellPackage.NeedsDeveloperMode)   // the one thing the user can change: say where
+                ShowSnack("Added under Show more options. For Windows 11's compact menu too, turn on Developer Mode, then use ⋯ again.",
+                          false, "OPEN SETTINGS", () => { try { Process.Start("ms-settings:developers"); } catch { } });
+            else
+                ShowSnack("Right-click a program or shortcut in Explorer and choose " + label +
+                          (ShellPackage.OnWindows11 ? " under Show more options (not in the compact menu: " + why + ")" : ""), false);
+            return;
+        }
+        ChangeShellPackage(on, label);
+    }
+
+    // The classic entry is there, the compact menu's isn't, and it could be added now
+    static bool OnlyCompactMenuMissing()
+    {
+        try
+        {
+            return (ExplorerMenu.Registered() != null || ExplorerMenu.AllUsersRegistered()) &&
+                   !ShellPackage.Registered() && ShellPackage.Unavailable() == null;
+        }
+        catch { return false; }
+    }
+
+    // Registers or removes the compact menu's package in the background (it takes about a second)
+    void ChangeShellPackage(bool remove, string label)
+    {
+        bool on = remove;
+        shellPackageBusy = true;
+        ShowSnack((on ? "Removing it from" : "Adding it to") + " Windows 11's compact menu…", false);
+        var worker = new System.Threading.Thread(() =>
+        {
+            string error = on ? ShellPackage.Unregister() : ShellPackage.Register();
+            BeginInvoke(new Action(() =>
+            {
+                shellPackageBusy = false;
+                if (error != null)
+                    ShowSnack((on ? "Removed the classic entry, but not the compact menu's: " : "Added to Show more options, but not to the compact menu: ") + error, true);
+                else
+                    ShowSnack(on ? "Removed " + label + " from Explorer"
+                                 : "Right-click a program or shortcut in Explorer and choose " + label, false);
+            }));
+        });
+        worker.IsBackground = true;
+        worker.Start();
     }
 
     // ---------- Back up and restore ----------
