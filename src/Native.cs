@@ -412,6 +412,23 @@ static class FileDrop
     }
 }
 
+// Lets a message from normal-user processes reach this elevated window (Windows drops most of them otherwise)
+static class MessageFilter
+{
+    [DllImport("user32.dll", SetLastError = true)]
+    static extern bool ChangeWindowMessageFilterEx(IntPtr hWnd, uint msg, uint action, IntPtr info);   // Windows 7+
+
+    public static void Allow(IntPtr hWnd, int msg)
+    {
+        try
+        {
+            if (!ChangeWindowMessageFilterEx(hWnd, (uint)msg, 1 /* MSGFLT_ALLOW */, IntPtr.Zero))
+                Program.Log("message filter for 0x" + msg.ToString("X") + " failed: " + Marshal.GetLastWin32Error());
+        }
+        catch (EntryPointNotFoundException) { }
+    }
+}
+
 // A second launch (e.g. from Explorer's "DPI scaling…") hands its paths to the window that's already open instead
 // of opening another one with another UAC prompt. The paths go in a WM_COPYDATA marked with Magic; the open window
 // answers 1, any other window answers 0. The open window lets WM_COPYDATA through the elevation filter (FileDrop.Enable).
